@@ -13,8 +13,12 @@ struct VisualEffectBackground: NSViewRepresentable {
         let view = NSVisualEffectView()
         view.material = material
         view.blendingMode = blendingMode
-        view.state = .active
-        view.isEmphasized = true
+        // Match AppKit's default sidebar (NSSplitViewItem.Behavior.sidebar): vibrancy follows
+        // the window's active state and is not emphasized. `isEmphasized = true` saturates the
+        // material more aggressively and made the right column tint visibly different from the
+        // NavigationSplitView-managed left sidebar.
+        view.state = .followsWindowActiveState
+        view.isEmphasized = false
         return view
     }
 

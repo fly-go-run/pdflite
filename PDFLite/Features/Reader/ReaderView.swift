@@ -9,22 +9,32 @@ struct ReaderView: View {
             SidebarView(session: session)
                 .navigationSplitViewColumnWidth(240)
         } detail: {
-            ZStack(alignment: .top) {
-                PDFKitRepresentable(session: session)
+            HStack(spacing: 0) {
+                ZStack(alignment: .top) {
+                    PDFKitRepresentable(session: session)
 
-                if session.isSearchVisible {
-                    SearchBar(session: session)
-                        .padding(.top, 12)
+                    if session.isSearchVisible {
+                        SearchBar(session: session)
+                            .padding(.top, 12)
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    PDFFloatingBar(session: session)
+                        .padding(.bottom, 16)
+                }
+
+                if session.isTranslationInspectorVisible {
+                    Divider()
+                    ZStack {
+                        Color(nsColor: .controlBackgroundColor)
+                            .ignoresSafeArea()
+                        VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
+                            .ignoresSafeArea()
+                        TranslationInspector(session: session)
+                    }
+                    .frame(width: 320)
                 }
             }
-            .overlay(alignment: .bottom) {
-                PDFFloatingBar(session: session)
-                    .padding(.bottom, 16)
-            }
-        }
-        .inspector(isPresented: $session.isTranslationInspectorVisible) {
-            TranslationInspector(session: session)
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
         }
         .toolbar {
             ReaderToolbar(session: session)
