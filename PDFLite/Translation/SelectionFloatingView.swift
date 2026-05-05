@@ -4,10 +4,12 @@ import SwiftUI
 /// actions; while a translation is streaming, also shows a short preview at the top.
 struct SelectionFloatingView: View {
     let translation: TranslationOutput?
+    let figureReference: FigureReference?
     let onTranslate: () -> Void
     let onHighlight: () -> Void
     let onCopy: () -> Void
     let onCancel: () -> Void
+    let onJumpToFigure: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -16,6 +18,14 @@ struct SelectionFloatingView: View {
                 Divider()
             }
             HStack(spacing: 4) {
+                if let figureReference {
+                    actionButton(
+                        systemName: "arrow.right.circle",
+                        title: "跳到 \(figureReference.canonicalLabel)",
+                        action: onJumpToFigure
+                    )
+                    Divider().frame(height: 14)
+                }
                 actionButton(systemName: "character.bubble", title: "翻译", action: onTranslate)
                 actionButton(systemName: "highlighter", title: "高亮", action: onHighlight)
                 actionButton(systemName: "doc.on.doc", title: "复制", action: onCopy)

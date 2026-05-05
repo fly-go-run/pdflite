@@ -13,11 +13,18 @@ final class SelectionPanelController {
     var onHighlight: (() -> Void)?
     var onCopy: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onJumpToFigure: (() -> Void)?
 
     /// Show or move the panel so it sits just below `screenRect` (the screen-space bounds of the
-    /// current selection). Translation state, if any, is rendered in the preview area.
-    func present(near screenRect: NSRect, translation: TranslationOutput?) {
-        let view = makeView(translation: translation)
+    /// current selection). Translation state, if any, is rendered in the preview area;
+    /// `figureReference` is non-nil when the selection looks like "Figure 3" / "Table 2" and
+    /// adds a jump button to the action row.
+    func present(
+        near screenRect: NSRect,
+        translation: TranslationOutput?,
+        figureReference: FigureReference?
+    ) {
+        let view = makeView(translation: translation, figureReference: figureReference)
         if panel == nil {
             buildPanel(initialView: view)
         } else {
@@ -34,9 +41,9 @@ final class SelectionPanelController {
         }
     }
 
-    func update(translation: TranslationOutput?) {
+    func update(translation: TranslationOutput?, figureReference: FigureReference?) {
         guard panel?.isVisible == true else { return }
-        host?.rootView = makeView(translation: translation)
+        host?.rootView = makeView(translation: translation, figureReference: figureReference)
     }
 
     func dismiss() {
@@ -49,13 +56,18 @@ final class SelectionPanelController {
 
     // MARK: - Build
 
-    private func makeView(translation: TranslationOutput?) -> SelectionFloatingView {
+    private func makeView(
+        translation: TranslationOutput?,
+        figureReference: FigureReference?
+    ) -> SelectionFloatingView {
         SelectionFloatingView(
             translation: translation,
+            figureReference: figureReference,
             onTranslate: { [weak self] in self?.onTranslate?() },
             onHighlight: { [weak self] in self?.onHighlight?() },
             onCopy: { [weak self] in self?.onCopy?() },
-            onCancel: { [weak self] in self?.onCancel?() }
+            onCancel: { [weak self] in self?.onCancel?() },
+            onJumpToFigure: { [weak self] in self?.onJumpToFigure?() }
         )
     }
 

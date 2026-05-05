@@ -504,6 +504,34 @@ final class DocumentSession {
         pb.setString("[\(preview.entry.number)] \(preview.entry.text)", forType: .string)
     }
 
+    // MARK: - Figure / Table jump
+
+    /// Parsed `Figure 3` / `Table 2` reference derived from the current selection text. nil when
+    /// the selection isn't shaped like a figure/table mention. Kept as a derived computed value
+    /// so we don't need to keep state in sync — it tracks `selection` automatically.
+    var currentFigureReference: FigureReference? {
+        guard let snapshot = selection else { return nil }
+        return FigureReference.parse(snapshot.rawText)
+    }
+
+    /// Search the document for the figure/table caption matching the current selection and jump
+    /// to it. Records nav history via goToSelection so Cmd-[ returns to the inline mention.
+    func jumpToCurrentFigure() {
+        guard let document,
+              let reference = currentFigureReference,
+              let snapshot = selection,
+              let target = FigureJumpService.locate(
+                reference,
+                in: document,
+                excluding: snapshot.pageIndex
+              )
+        else { return }
+        // Drop selection first so the floating panel dismisses; then jump.
+        pdfView?.clearTextSelection()
+        selection = nil
+        goToSelection(target)
+    }
+
     // MARK: - Translation
 
     /// Translate the current selection. No-op if there is no selection.

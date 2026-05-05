@@ -57,6 +57,9 @@ struct ReaderWindowView: View {
         panelController.onCancel = {
             session.cancelTranslation()
         }
+        panelController.onJumpToFigure = {
+            session.jumpToCurrentFigure()
+        }
     }
 
     private func wireRefPanelActions() {
@@ -77,7 +80,11 @@ struct ReaderWindowView: View {
             panelController.dismiss()
             return
         }
-        panelController.present(near: rect, translation: session.translation.current)
+        panelController.present(
+            near: rect,
+            translation: session.translation.current,
+            figureReference: session.currentFigureReference
+        )
     }
 
     private func refreshRefPanel() {
