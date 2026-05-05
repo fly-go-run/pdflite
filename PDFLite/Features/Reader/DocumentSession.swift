@@ -552,6 +552,18 @@ final class DocumentSession {
         pb.setString(snapshot.rawText, forType: .string)
     }
 
+    var shouldDismissSelectionPanelForCompletedTranslation: Bool {
+        guard let current = translation.current,
+              let snapshot = selection,
+              isSameSelectionAsCurrentTranslation(snapshot),
+              !current.isStreaming,
+              current.errorMessage == nil,
+              !current.partial.isEmpty else {
+            return false
+        }
+        return true
+    }
+
     /// Selection rect in screen coordinates, or nil if no usable selection / no window.
     func selectionScreenRect() -> NSRect? {
         guard let snapshot = selection,

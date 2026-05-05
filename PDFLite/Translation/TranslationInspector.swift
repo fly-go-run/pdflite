@@ -3,6 +3,8 @@ import SwiftUI
 
 struct TranslationInspector: View {
     @Bindable var session: DocumentSession
+    @State private var isSourceExpanded = false
+    @State private var historyTimeLabels: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,35 +26,65 @@ struct TranslationInspector: View {
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
                     currentSection
-                    Divider()
-                    historySection
+                    if !session.translation.history.isEmpty {
+                        Divider()
+                        historySection
+                    }
                 }
                 .padding(12)
             }
+        }
+        .onAppear {
+            refreshHistoryTimeLabels()
+        }
+        .onChange(of: session.translation.current?.startedAt) { _, _ in
+            isSourceExpanded = false
+        }
+        .onChange(of: session.translation.history.map(historyKey)) { _, _ in
+            addMissingHistoryTimeLabels()
         }
     }
 
     @ViewBuilder
     private var currentSection: some View {
         if let translation = session.translation.current {
-            VStack(alignment: .leading, spacing: 6) {
-                Label("当前选区", systemImage: "text.cursor")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let pageIndex = translation.pageIndex {
-                    Text("第 \(pageIndex + 1) 页")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Label("当前选区", systemImage: "text.cursor")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let pageIndex = translation.pageIndex {
+                        Text("第 \(pageIndex + 1) 页")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    if translation.isStreaming {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if translation.fromCache {
+                        Image(systemName: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
                 }
-                Text(translation.sourceText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                    .textSelection(.enabled)
+
+                DisclosureGroup(isExpanded: $isSourceExpanded) {
+                    Text(translation.sourceText)
+                        .font(.system(size: 12))
+                        .lineSpacing(1.5)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
+                        .textSelection(.enabled)
+                } label: {
+                    Text("原文")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .disclosureGroupStyle(.automatic)
 
                 if let error = translation.errorMessage {
                     Text(error)
@@ -61,30 +93,26 @@ struct TranslationInspector: View {
                         .textSelection(.enabled)
                 } else if !translation.partial.isEmpty {
                     Text(translation.partial)
-                        .font(.system(size: 13))
+                        .font(.system(size: 14))
+                        .lineSpacing(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
 
                 HStack(spacing: 8) {
                     if translation.isStreaming {
-                        ProgressView()
-                            .controlSize(.mini)
                         Text("翻译中…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("取消") { session.cancelTranslation() }
                             .buttonStyle(.borderless)
-                    } else if translation.fromCache {
-                        Image(systemName: "checkmark.seal")
-                            .foregroundStyle(.green)
-                        Text("缓存命中")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        copyButton(text: translation.partial)
                     } else if !translation.partial.isEmpty {
+                        if translation.fromCache {
+                            Text("缓存命中")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
                         copyButton(text: translation.partial)
                     } else {
@@ -113,7 +141,7 @@ struct TranslationInspector: View {
         if history.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Label("历史", systemImage: "clock")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -125,42 +153,38 @@ struct TranslationInspector: View {
     }
 
     private func historyRow(_ record: TranslationRecord) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        HStack(spacing: 6) {
+            Button {
                 if let pageIndex = record.pageIndex {
-                    Text("第 \(pageIndex + 1) 页")
+                    session.goToPage(pageIndex)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if let pageIndex = record.pageIndex {
+                        Text("第 \(pageIndex + 1) 页")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text("·")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+                    Text(historyTimeLabel(for: record))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(minWidth: 44, alignment: .leading)
+                    Text(record.targetText)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer()
-                Text(record.createdAt, style: .relative)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                .contentShape(Rectangle())
             }
-            Text(record.sourceText)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
-            Text(record.targetText)
-                .font(.system(size: 12))
-                .lineLimit(3)
-                .truncationMode(.tail)
-            HStack(spacing: 8) {
-                if let pageIndex = record.pageIndex {
-                    Button {
-                        session.goToPage(pageIndex)
-                    } label: {
-                        Label("跳回原文", systemImage: "arrow.uturn.backward")
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                }
-                copyButton(text: record.targetText)
-            }
+            .buttonStyle(.plain)
+            .disabled(record.pageIndex == nil)
+            compactCopyButton(text: record.targetText)
         }
-        .padding(8)
-        .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.vertical, 4)
     }
 
     private func copyButton(text: String) -> some View {
@@ -173,5 +197,69 @@ struct TranslationInspector: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
+    }
+
+    private func compactCopyButton(text: String) -> some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.borderless)
+        .help("复制译文")
+    }
+
+    private func historyTimeLabel(for record: TranslationRecord) -> String {
+        historyTimeLabels[historyKey(for: record)] ?? makeHistoryTimeLabel(from: record.createdAt)
+    }
+
+    private func refreshHistoryTimeLabels() {
+        historyTimeLabels = Dictionary(
+            uniqueKeysWithValues: session.translation.history.map { record in
+                (historyKey(for: record), makeHistoryTimeLabel(from: record.createdAt))
+            }
+        )
+    }
+
+    private func addMissingHistoryTimeLabels() {
+        let visibleKeys = Set(session.translation.history.map(historyKey))
+        var labels = historyTimeLabels.filter { visibleKeys.contains($0.key) }
+        var changed = labels.count != historyTimeLabels.count
+
+        for record in session.translation.history {
+            let key = historyKey(for: record)
+            if labels[key] == nil {
+                labels[key] = makeHistoryTimeLabel(from: record.createdAt)
+                changed = true
+            }
+        }
+
+        if changed {
+            historyTimeLabels = labels
+        }
+    }
+
+    private func historyKey(for record: TranslationRecord) -> String {
+        if let id = record.id {
+            return "id:\(id)"
+        }
+        return "pending:\(record.textHash):\(record.createdAt.timeIntervalSince1970)"
+    }
+
+    private func makeHistoryTimeLabel(from date: Date) -> String {
+        let elapsed = max(0, Int(Date().timeIntervalSince(date)))
+        if elapsed < 60 {
+            return "刚刚"
+        }
+        if elapsed < 3600 {
+            return "\(elapsed / 60) 分钟前"
+        }
+        if elapsed < 86_400 {
+            return "\(elapsed / 3600) 小时前"
+        }
+        return "\(elapsed / 86_400) 天前"
     }
 }

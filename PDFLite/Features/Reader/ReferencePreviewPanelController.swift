@@ -22,9 +22,9 @@ final class ReferencePreviewPanelController {
         }
 
         guard let panel else { return }
-        panel.layoutIfNeeded()
-        let size = panel.frame.size
-        panel.setFrameOrigin(clampedOrigin(for: size, near: screenRect))
+        let size = NSSize(width: 380, height: 230)
+        let origin = clampedOrigin(for: size, near: screenRect)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
@@ -47,10 +47,9 @@ final class ReferencePreviewPanelController {
 
     private func buildPanel(initialView: ReferencePreviewView) {
         let host = NSHostingController(rootView: initialView)
-        host.sizingOptions = [.minSize, .preferredContentSize]
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 230),
             styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false

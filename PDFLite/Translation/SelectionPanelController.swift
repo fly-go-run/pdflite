@@ -22,9 +22,14 @@ final class SelectionPanelController {
     func present(
         near screenRect: NSRect,
         translation: TranslationOutput?,
-        figureReference: FigureReference?
+        figureReference: FigureReference?,
+        inspectorOpen: Bool
     ) {
-        let view = makeView(translation: translation, figureReference: figureReference)
+        let view = makeView(
+            translation: translation,
+            figureReference: figureReference,
+            inspectorOpen: inspectorOpen
+        )
         if panel == nil {
             buildPanel(initialView: view)
         } else {
@@ -32,18 +37,29 @@ final class SelectionPanelController {
         }
 
         guard let panel else { return }
-        panel.layoutIfNeeded()
-        let panelSize = panel.frame.size
-        let origin = clampedOrigin(for: panelSize, near: screenRect)
-        panel.setFrameOrigin(origin)
+        let size = panelSize(
+            translation: translation,
+            figureReference: figureReference,
+            inspectorOpen: inspectorOpen
+        )
+        let origin = clampedOrigin(for: size, near: screenRect)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
     }
 
-    func update(translation: TranslationOutput?, figureReference: FigureReference?) {
+    func update(
+        translation: TranslationOutput?,
+        figureReference: FigureReference?,
+        inspectorOpen: Bool
+    ) {
         guard panel?.isVisible == true else { return }
-        host?.rootView = makeView(translation: translation, figureReference: figureReference)
+        host?.rootView = makeView(
+            translation: translation,
+            figureReference: figureReference,
+            inspectorOpen: inspectorOpen
+        )
     }
 
     func dismiss() {
@@ -58,11 +74,13 @@ final class SelectionPanelController {
 
     private func makeView(
         translation: TranslationOutput?,
-        figureReference: FigureReference?
+        figureReference: FigureReference?,
+        inspectorOpen: Bool
     ) -> SelectionFloatingView {
         SelectionFloatingView(
             translation: translation,
             figureReference: figureReference,
+            inspectorOpen: inspectorOpen,
             onTranslate: { [weak self] in self?.onTranslate?() },
             onHighlight: { [weak self] in self?.onHighlight?() },
             onCopy: { [weak self] in self?.onCopy?() },
@@ -73,10 +91,9 @@ final class SelectionPanelController {
 
     private func buildPanel(initialView: SelectionFloatingView) {
         let host = NSHostingController(rootView: initialView)
-        host.sizingOptions = [.minSize, .preferredContentSize]
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 44),
             styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -96,6 +113,38 @@ final class SelectionPanelController {
 
         self.host = host
         self.panel = panel
+    }
+
+    private func panelSize(
+        translation: TranslationOutput?,
+        figureReference: FigureReference?,
+        inspectorOpen: Bool
+    ) -> NSSize {
+        // Inspector-open compact mode: icon-only buttons, no preview row. Stay narrow so the
+        // panel doesn't shadow the user's reading area.
+        if inspectorOpen {
+            let width: CGFloat = figureReference != nil ? 240 : 150
+            return NSSize(width: width, height: 44)
+        }
+
+        let hasPreview = translation.map { output in
+            output.errorMessage != nil
+                || output.isStreaming
+        } ?? false
+
+        let width: CGFloat
+        if figureReference != nil {
+            width = 350
+        } else if translation?.isStreaming == true {
+            width = 330
+        } else {
+            width = 300
+        }
+
+        if translation?.errorMessage != nil {
+            return NSSize(width: width, height: 100)
+        }
+        return NSSize(width: width, height: hasPreview ? 72 : 44)
     }
 
     /// Place the panel just below the selection rect, then clamp inside the screen the rect

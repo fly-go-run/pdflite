@@ -31,6 +31,11 @@ struct ReaderWindowView: View {
         .onChange(of: session.translation.current) { _, _ in
             refreshPanel()
         }
+        .onChange(of: session.isTranslationInspectorVisible) { _, _ in
+            // Inspector toggling alone changes the panel's compact/full layout — refresh so the
+            // floating panel re-renders without waiting for a new selection or stream tick.
+            refreshPanel()
+        }
         .onChange(of: session.referencePreview) { _, _ in
             refreshRefPanel()
         }
@@ -80,10 +85,15 @@ struct ReaderWindowView: View {
             panelController.dismiss()
             return
         }
+        if session.shouldDismissSelectionPanelForCompletedTranslation {
+            panelController.dismiss()
+            return
+        }
         panelController.present(
             near: rect,
             translation: session.translation.current,
-            figureReference: session.currentFigureReference
+            figureReference: session.currentFigureReference,
+            inspectorOpen: session.isTranslationInspectorVisible
         )
     }
 
