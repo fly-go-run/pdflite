@@ -8,6 +8,7 @@ import SwiftUI
 final class SelectionPanelController {
     private var panel: NSPanel?
     private var host: NSHostingController<SelectionFloatingView>?
+    private weak var parentWindow: NSWindow?
 
     var onTranslate: (() -> Void)?
     var onHighlight: (() -> Void)?
@@ -23,7 +24,8 @@ final class SelectionPanelController {
         near screenRect: NSRect,
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool
+        inspectorOpen: Bool,
+        ownerWindow: NSWindow?
     ) {
         let view = makeView(
             translation: translation,
@@ -37,6 +39,7 @@ final class SelectionPanelController {
         }
 
         guard let panel else { return }
+        attach(panel, to: ownerWindow)
         let size = panelSize(
             translation: translation,
             figureReference: figureReference,
@@ -63,6 +66,10 @@ final class SelectionPanelController {
     }
 
     func dismiss() {
+        if let panel {
+            parentWindow?.removeChildWindow(panel)
+            parentWindow = nil
+        }
         panel?.orderOut(nil)
     }
 
@@ -103,7 +110,7 @@ final class SelectionPanelController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.level = .floating
-        panel.collectionBehavior = [.transient, .ignoresCycle, .moveToActiveSpace]
+        panel.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -113,6 +120,16 @@ final class SelectionPanelController {
 
         self.host = host
         self.panel = panel
+    }
+
+    private func attach(_ panel: NSPanel, to ownerWindow: NSWindow?) {
+        guard parentWindow !== ownerWindow else { return }
+        parentWindow?.removeChildWindow(panel)
+        parentWindow = nil
+
+        guard let ownerWindow else { return }
+        ownerWindow.addChildWindow(panel, ordered: .above)
+        parentWindow = ownerWindow
     }
 
     private func panelSize(

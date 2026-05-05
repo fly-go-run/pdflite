@@ -13,6 +13,7 @@ final class AppFocusState {
 
     private(set) var revision = 0
     @ObservationIgnored private weak var weakActiveSession: DocumentSession?
+    @ObservationIgnored private var fullScreenTransitioningWindowIDs: Set<ObjectIdentifier> = []
 
     var activeSession: DocumentSession? {
         _ = revision
@@ -22,6 +23,16 @@ final class AppFocusState {
     func activate(_ session: DocumentSession) {
         if weakActiveSession !== session {
             weakActiveSession = session
+        }
+        revision += 1
+    }
+
+    func setFullScreenTransitioning(_ window: NSWindow, _ transitioning: Bool) {
+        let id = ObjectIdentifier(window)
+        if transitioning {
+            fullScreenTransitioningWindowIDs.insert(id)
+        } else {
+            fullScreenTransitioningWindowIDs.remove(id)
         }
         revision += 1
     }
@@ -39,6 +50,11 @@ final class AppFocusState {
             return
         }
 
+        guard !fullScreenTransitioningWindowIDs.contains(ObjectIdentifier(window)) else {
+            revision += 1
+            return
+        }
+
         if !NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -52,6 +68,17 @@ final class AppFocusState {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeSpaceObserver: NSObjectProtocol?
+    private var fullScreenObservers: [NSObjectProtocol] = []
+
+    deinit {
+        if let activeSpaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activeSpaceObserver)
+        }
+        let center = NotificationCenter.default
+        for observer in fullScreenObservers {
+            center.removeObserver(observer)
+        }
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
@@ -72,6 +99,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppFocusState.shared.reassertOrActivateDocumentWindow()
             }
         }
+
+        let center = NotificationCenter.default
+        fullScreenObservers = [
+            center.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleFullScreenTransition(notification, transitioning: true)
+            },
+            center.addObserver(
+                forName: NSWindow.willExitFullScreenNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleFullScreenTransition(notification, transitioning: true)
+            },
+            center.addObserver(
+                forName: NSWindow.didEnterFullScreenNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
+            },
+            center.addObserver(
+                forName: NSWindow.didExitFullScreenNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
+            }
+        ]
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -82,6 +141,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         AppFocusState.shared.reassertOrActivateDocumentWindow()
+    }
+
+    private func handleFullScreenTransition(_ notification: Notification,
+                                            transitioning: Bool,
+                                            reassertAfter: Bool = false) {
+        guard let window = notification.object as? NSWindow else { return }
+        Task { @MainActor in
+            AppFocusState.shared.setFullScreenTransitioning(window, transitioning)
+            guard reassertAfter else { return }
+            try? await Task.sleep(for: .milliseconds(120))
+            AppFocusState.shared.reassertOrActivateDocumentWindow()
+        }
     }
 }
 

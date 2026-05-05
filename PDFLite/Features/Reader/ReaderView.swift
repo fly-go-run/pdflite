@@ -8,10 +8,6 @@ struct ReaderView: View {
         HStack(spacing: 0) {
             if session.isSidebarVisible {
                 ZStack {
-                    // Solid base (deepest), then vibrancy on top, then SidebarView content. Both
-                    // backings ignoreSafeArea so they keep filling the column even while the
-                    // window's safe area is animating through the fullscreen ↔ windowed
-                    // transition — which is what was leaving a one-frame grey flash before.
                     Color(nsColor: .controlBackgroundColor)
                         .ignoresSafeArea()
                     VisualEffectBackground(material: .sidebar)
@@ -19,6 +15,7 @@ struct ReaderView: View {
                     SidebarView(session: session)
                 }
                 .frame(width: 240)
+                .transaction { $0.disablesAnimations = true }
                 Divider()
             }
 
@@ -41,6 +38,7 @@ struct ReaderView: View {
                     TranslationInspector(session: session)
                 }
                 .frame(width: 320)
+                .transaction { $0.disablesAnimations = true }
             }
         }
         .toolbar {

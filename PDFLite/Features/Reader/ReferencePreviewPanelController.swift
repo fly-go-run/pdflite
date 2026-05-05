@@ -8,12 +8,13 @@ import SwiftUI
 final class ReferencePreviewPanelController {
     private var panel: NSPanel?
     private var host: NSHostingController<ReferencePreviewView>?
+    private weak var parentWindow: NSWindow?
 
     var onJump: (() -> Void)?
     var onCopy: (() -> Void)?
     var onClose: (() -> Void)?
 
-    func present(near screenRect: NSRect, entry: ReferenceEntry) {
+    func present(near screenRect: NSRect, entry: ReferenceEntry, ownerWindow: NSWindow?) {
         let view = makeView(entry: entry)
         if panel == nil {
             buildPanel(initialView: view)
@@ -22,6 +23,7 @@ final class ReferencePreviewPanelController {
         }
 
         guard let panel else { return }
+        attach(panel, to: ownerWindow)
         let size = NSSize(width: 380, height: 230)
         let origin = clampedOrigin(for: size, near: screenRect)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
@@ -31,6 +33,10 @@ final class ReferencePreviewPanelController {
     }
 
     func dismiss() {
+        if let panel {
+            parentWindow?.removeChildWindow(panel)
+            parentWindow = nil
+        }
         panel?.orderOut(nil)
     }
 
@@ -59,7 +65,7 @@ final class ReferencePreviewPanelController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.level = .floating
-        panel.collectionBehavior = [.transient, .ignoresCycle, .moveToActiveSpace]
+        panel.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -69,6 +75,16 @@ final class ReferencePreviewPanelController {
 
         self.host = host
         self.panel = panel
+    }
+
+    private func attach(_ panel: NSPanel, to ownerWindow: NSWindow?) {
+        guard parentWindow !== ownerWindow else { return }
+        parentWindow?.removeChildWindow(panel)
+        parentWindow = nil
+
+        guard let ownerWindow else { return }
+        ownerWindow.addChildWindow(panel, ordered: .above)
+        parentWindow = ownerWindow
     }
 
     private func clampedOrigin(for panelSize: NSSize, near rect: NSRect) -> NSPoint {

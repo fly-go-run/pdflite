@@ -29,6 +29,15 @@ final class ReaderPDFView: PDFView {
     var commandScrollZoomMin: CGFloat = 0.25
     var commandScrollZoomMax: CGFloat = 8.0
 
+    private struct VisibleResizeAnchor {
+        let page: PDFPage
+        let pagePoint: NSPoint
+        let relativeViewportPoint: CGPoint
+    }
+
+    private let resizeAnchorTolerance: CGFloat = 0.5
+    private var isRestoringResizeAnchor = false
+
     /// Right-click on an annotation owned by us -> caller provides the menu (delete, copy text...).
     var annotationContextMenuProvider: ((PDFAnnotation) -> NSMenu?)?
     /// Called when the user clicks a Link annotation that resolves to an internal destination.
@@ -71,6 +80,26 @@ final class ReaderPDFView: PDFView {
             return
         }
         applyCommandScrollZoom(event)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let oldSize = frame.size
+        let anchor = shouldPreserveResizeAnchor(from: oldSize, to: newSize)
+            ? captureVisibleResizeAnchor()
+            : nil
+
+        super.setFrameSize(newSize)
+        restoreVisibleResizeAnchor(anchor)
+    }
+
+    override func resize(withOldSuperviewSize oldSize: NSSize) {
+        let oldFrameSize = frame.size
+        let anchor = captureVisibleResizeAnchor()
+
+        super.resize(withOldSuperviewSize: oldSize)
+
+        guard shouldPreserveResizeAnchor(from: oldFrameSize, to: frame.size) else { return }
+        restoreVisibleResizeAnchor(anchor)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -206,6 +235,77 @@ final class ReaderPDFView: PDFView {
                 scrollView.reflectScrolledClipView(scrollView.contentView)
             }
         }
+    }
+
+    private func shouldPreserveResizeAnchor(from oldSize: NSSize, to newSize: NSSize) -> Bool {
+        guard !isRestoringResizeAnchor,
+              document != nil,
+              oldSize.width > 1,
+              oldSize.height > 1,
+              newSize.width > 1,
+              newSize.height > 1 else {
+            return false
+        }
+        return abs(oldSize.width - newSize.width) > resizeAnchorTolerance
+            || abs(oldSize.height - newSize.height) > resizeAnchorTolerance
+    }
+
+    private func captureVisibleResizeAnchor() -> VisibleResizeAnchor? {
+        guard document != nil,
+              let scrollView = documentScrollView,
+              bounds.width > 1,
+              bounds.height > 1 else {
+            return nil
+        }
+
+        let relativePoint = CGPoint(x: 0.5, y: 0.5)
+        let viewPoint = viewportPoint(relative: relativePoint, in: scrollView)
+        guard let page = page(for: viewPoint, nearest: true) else { return nil }
+
+        return VisibleResizeAnchor(
+            page: page,
+            pagePoint: convert(viewPoint, to: page),
+            relativeViewportPoint: relativePoint
+        )
+    }
+
+    private func restoreVisibleResizeAnchor(_ anchor: VisibleResizeAnchor?) {
+        guard let anchor,
+              !isRestoringResizeAnchor,
+              document != nil,
+              let scrollView = documentScrollView else {
+            return
+        }
+
+        layoutDocumentView()
+
+        let currentViewPoint = convert(anchor.pagePoint, from: anchor.page)
+        let desiredViewPoint = viewportPoint(relative: anchor.relativeViewportPoint, in: scrollView)
+        let dx = currentViewPoint.x - desiredViewPoint.x
+        let dy = currentViewPoint.y - desiredViewPoint.y
+        guard abs(dx) + abs(dy) > resizeAnchorTolerance else { return }
+
+        var origin = scrollView.contentView.bounds.origin
+        origin.x += dx
+        origin.y += dy
+
+        let constrained = scrollView.contentView.constrainBoundsRect(
+            NSRect(origin: origin, size: scrollView.contentView.bounds.size)
+        )
+
+        isRestoringResizeAnchor = true
+        defer { isRestoringResizeAnchor = false }
+        scrollView.contentView.scroll(to: constrained.origin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func viewportPoint(relative point: CGPoint, in scrollView: NSScrollView) -> NSPoint {
+        let viewportFrame = scrollView.contentView.frame
+        let pointInScrollView = NSPoint(
+            x: viewportFrame.minX + viewportFrame.width * point.x,
+            y: viewportFrame.minY + viewportFrame.height * point.y
+        )
+        return convert(pointInScrollView, from: scrollView)
     }
 
     private var documentScrollView: NSScrollView? {

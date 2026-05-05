@@ -94,7 +94,8 @@ struct ReaderWindowView: View {
             near: rect,
             translation: session.translation.current,
             figureReference: session.currentFigureReference,
-            inspectorOpen: session.isTranslationInspectorVisible
+            inspectorOpen: session.isTranslationInspectorVisible,
+            ownerWindow: session.pdfView?.window
         )
     }
 
@@ -103,7 +104,11 @@ struct ReaderWindowView: View {
             refPanel.dismiss()
             return
         }
-        refPanel.present(near: preview.anchor, entry: preview.entry)
+        refPanel.present(
+            near: preview.anchor,
+            entry: preview.entry,
+            ownerWindow: session.pdfView?.window
+        )
     }
 }
 
