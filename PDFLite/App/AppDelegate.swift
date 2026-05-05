@@ -11,6 +11,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DocumentOpener.requestOpen(url: url)
         }
     }
+
+    /// macOS Spaces / Mission Control gestures sometimes leave the app frontmost but with no
+    /// key window. SwiftUI's `@FocusedValue` only routes when a scene is the key window, so the
+    /// menu items (and their keyboard shortcuts) stay disabled until the user clicks the doc.
+    /// Force-pick a doc window to be key whenever we activate without one.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard NSApp.keyWindow == nil else { return }
+        let candidate = NSApp.windows.first { window in
+            window.isVisible
+                && window.canBecomeKey
+                && !(window is NSPanel)
+        }
+        candidate?.makeKey()
+    }
 }
 
 /// Bridges Finder-driven open events to whichever window/session handles the document.
