@@ -8,7 +8,7 @@ struct OutlineSidebar: View {
         Group {
             if let root = session.outlineRoot, let children = root.children, !children.isEmpty {
                 List {
-                    OutlineItemRows(items: children, session: session)
+                    OutlineItemRows(items: children, session: session, depth: 0)
                 }
                 .listStyle(.sidebar)
             } else {
@@ -30,18 +30,41 @@ struct OutlineSidebar: View {
 private struct OutlineItemRows: View {
     let items: [OutlineItem]
     let session: DocumentSession
+    let depth: Int
 
     var body: some View {
         ForEach(items) { item in
             if let children = item.children, !children.isEmpty {
-                DisclosureGroup {
-                    OutlineItemRows(items: children, session: session)
-                } label: {
-                    OutlineItemLabel(item: item, session: session)
-                }
+                OutlineDisclosure(item: item, children: children, session: session, depth: depth)
             } else {
                 OutlineItemLabel(item: item, session: session)
             }
+        }
+    }
+}
+
+/// Default-expand only the first level so the outline opens to depth 2 (top-level + their
+/// direct children). Deeper nodes stay collapsed until the user expands them.
+private struct OutlineDisclosure: View {
+    let item: OutlineItem
+    let children: [OutlineItem]
+    let session: DocumentSession
+    let depth: Int
+    @State private var isExpanded: Bool
+
+    init(item: OutlineItem, children: [OutlineItem], session: DocumentSession, depth: Int) {
+        self.item = item
+        self.children = children
+        self.session = session
+        self.depth = depth
+        self._isExpanded = State(initialValue: depth == 0)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            OutlineItemRows(items: children, session: session, depth: depth + 1)
+        } label: {
+            OutlineItemLabel(item: item, session: session)
         }
     }
 }
