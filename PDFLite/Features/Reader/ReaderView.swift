@@ -29,6 +29,13 @@ struct ReaderView: View {
                             .padding(.top, 12)
                     }
                 }
+
+                if session.isTranslationInspectorVisible {
+                    Divider()
+                    TranslationInspector(session: session)
+                        .frame(width: 320)
+                        .background(.regularMaterial)
+                }
             }
         }
     }

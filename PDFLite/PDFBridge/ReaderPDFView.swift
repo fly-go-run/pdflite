@@ -16,15 +16,24 @@ final class ReaderPDFView: PDFView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         unregisterDraggedTypes()
+        // Match Skim: stay on the traditional NSView drawing path. Forcing layer-backed
+        // here makes every internal PDFPageView allocate its own backing store, which
+        // hurts fast-scroll throughput more than it helps.
+        interpolationQuality = .low
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         unregisterDraggedTypes()
+        interpolationQuality = .low
     }
 
     func clearTextSelection() {
         setCurrentSelection(nil, animate: false)
+    }
+
+    var scrollViewForObservation: NSScrollView? {
+        documentScrollView
     }
 
     override func scrollWheel(with event: NSEvent) {

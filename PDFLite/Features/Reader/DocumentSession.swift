@@ -39,19 +39,29 @@ final class DocumentSession {
 
     // MARK: - View state
     var displayMode: PDFDisplayMode = .singlePageContinuous {
-        didSet { if oldValue != displayMode { scheduleSave() } }
+        didSet {
+            if oldValue != displayMode {
+                scheduleSave()
+                schedulePageWarmup(direction: .both, delayMilliseconds: 250)
+            }
+        }
     }
     private(set) var scaleFactor: CGFloat = 1.0
     var isSidebarVisible: Bool = false
     var sidebarTab: SidebarTab = .outline
     var isSearchVisible: Bool = false
+    var isTranslationInspectorVisible: Bool = false
 
     // MARK: - Outline & search
     private(set) var outlineRoot: OutlineItem?
     var search = SearchService()
 
+    // MARK: - Translation
+    var translation = TranslationService()
+
     // MARK: - Selection & annotations
     private(set) var selection: SelectionSnapshot?
+    private(set) var selectionRevision: Int = 0
     private(set) var annotationService: AnnotationService?
 
     // MARK: - PDFView ref
@@ -69,6 +79,10 @@ final class DocumentSession {
     private var saveTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
     private let saveDebounce: Duration = .milliseconds(500)
+    private let pageWarmup = PDFPageWarmupService.shared
+    @ObservationIgnored private var scrollIdleTask: Task<Void, Never>?
+    @ObservationIgnored private var isScrollActive = false
+    @ObservationIgnored private var lastWarmupDirection: PDFPageWarmupDirection = .both
 
     var hasDocument: Bool { document != nil }
     var canAcceptOpen: Bool { document == nil && fileURL == nil }
@@ -170,6 +184,11 @@ final class DocumentSession {
         annotationService = AnnotationService(document: doc)
         search.clear()
         selection = nil
+        translation.reset()
+        if let documentId = record?.id,
+           let history = try? TranslationRepository.shared.list(forDocumentId: documentId) {
+            translation.setHistory(history)
+        }
 
         // Reading state from DB
         if let savedMode = record?.displayMode {
@@ -183,11 +202,17 @@ final class DocumentSession {
         needsBridgeRestore = true
 
         RecentFilesService.shared.add(url)
+        schedulePageWarmup(direction: .forward, delayMilliseconds: 500)
     }
 
     func closeDocument() {
         openTask?.cancel()
         openTask = nil
+        scrollIdleTask?.cancel()
+        scrollIdleTask = nil
+        isScrollActive = false
+        lastWarmupDirection = .both
+        pageWarmup.reset()
         flushSave()
         fileURL = nil
         document = nil
@@ -198,6 +223,8 @@ final class DocumentSession {
         annotationService = nil
         selection = nil
         search.clear()
+        translation.reset()
+        isTranslationInspectorVisible = false
     }
 
     func flushReadingState() {
@@ -308,6 +335,42 @@ final class DocumentSession {
         selection = nil
     }
 
+    // MARK: - Translation
+
+    /// Translate the current selection. No-op if there is no selection.
+    func translateCurrentSelection() {
+        guard let snapshot = selection else { return }
+        isTranslationInspectorVisible = true
+        translation.translate(snapshot: snapshot, documentId: documentId)
+    }
+
+    func cancelTranslation() {
+        translation.cancelInFlight()
+    }
+
+    func copyCurrentSelection() {
+        guard let snapshot = selection else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(snapshot.rawText, forType: .string)
+    }
+
+    /// Selection rect in screen coordinates, or nil if no usable selection / no window.
+    func selectionScreenRect() -> NSRect? {
+        guard let snapshot = selection,
+              let pdfView,
+              let window = pdfView.window else { return nil }
+
+        // Union of every line rect, in page coords.
+        let union = snapshot.lineRects.reduce(snapshot.lineRects.first ?? .zero) { $0.union($1) }
+        guard !union.isEmpty else { return nil }
+
+        // page → view → window → screen
+        let inView = pdfView.convert(union, from: snapshot.page)
+        let inWindow = pdfView.convert(inView, to: nil)
+        return window.convertToScreen(inWindow)
+    }
+
     func deleteAnnotation(id: String) {
         do {
             try AnnotationRepository.shared.delete(id: id)
@@ -322,17 +385,52 @@ final class DocumentSession {
 
     func handlePageChanged(to index: Int) {
         guard index != currentPageIndex else { return }
+        let direction: PDFPageWarmupDirection = index > currentPageIndex ? .forward : .backward
         currentPageIndex = index
+        lastWarmupDirection = direction
         scheduleSave()
+        schedulePageWarmup(direction: direction, delayMilliseconds: 160)
     }
 
     func handleScaleChanged(_ factor: CGFloat) {
         scaleFactor = factor
         scheduleSave()
+        schedulePageWarmup(direction: .both, delayMilliseconds: 250)
+    }
+
+    func handleScrollActivity() {
+        guard document != nil else { return }
+        if !isScrollActive {
+            isScrollActive = true
+        }
+        pageWarmup.cancelPending()
+        scrollIdleTask?.cancel()
+        scrollIdleTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(220))
+            if Task.isCancelled { return }
+            self?.handleScrollIdle()
+        }
     }
 
     func handleSelectionChanged(_ snapshot: SelectionSnapshot?) {
+        let streaming = translation.current?.isStreaming == true
+        let shouldRestartStreamingTranslation = streaming
+            && snapshot != nil
+            && !isSameSelectionAsCurrentTranslation(snapshot)
+
         selection = snapshot
+        selectionRevision += 1
+
+        if shouldRestartStreamingTranslation, let snapshot {
+            isTranslationInspectorVisible = true
+            translation.translate(snapshot: snapshot, documentId: documentId)
+        }
+    }
+
+    private func isSameSelectionAsCurrentTranslation(_ snapshot: SelectionSnapshot?) -> Bool {
+        guard let snapshot, let current = translation.current else { return false }
+        return current.pageIndex == snapshot.pageIndex
+            && current.sourceText == snapshot.rawText
     }
 
     // MARK: - Persistence
@@ -374,5 +472,28 @@ final class DocumentSession {
         } catch {
             logger.error("Reading-state flush failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private func handleScrollIdle() {
+        isScrollActive = false
+        schedulePageWarmup(direction: lastWarmupDirection, delayMilliseconds: 100)
+    }
+
+    private func schedulePageWarmup(direction: PDFPageWarmupDirection,
+                                    delayMilliseconds: Int) {
+        guard let fileURL, pageCount > 0 else { return }
+        guard isScrollActive == false else {
+            pageWarmup.cancelPending()
+            return
+        }
+        pageWarmup.schedule(
+            url: fileURL,
+            currentPageIndex: currentPageIndex,
+            pageCount: pageCount,
+            displayMode: displayMode,
+            scaleFactor: scaleFactor,
+            direction: direction,
+            delayMilliseconds: delayMilliseconds
+        )
     }
 }

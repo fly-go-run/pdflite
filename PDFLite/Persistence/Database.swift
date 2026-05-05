@@ -76,6 +76,58 @@ final class Database {
                           columns: ["document_id", "page_index"])
         }
 
+        m.registerMigration("v2_translations") { db in
+            try db.create(table: "translations") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("document_id", .integer)
+                    .references("documents", onDelete: .cascade)
+                t.column("page_index", .integer)
+                t.column("text_hash", .text).notNull()
+                t.column("source_text", .text).notNull()
+                t.column("target_text", .text).notNull()
+                t.column("provider", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("created_at", .datetime).notNull()
+            }
+
+            try db.create(index: "idx_translations_hash",
+                          on: "translations",
+                          columns: ["text_hash"])
+            try db.create(index: "idx_translations_document",
+                          on: "translations",
+                          columns: ["document_id", "created_at"])
+        }
+
+        m.registerMigration("v3_translation_history_per_document") { db in
+            try db.create(table: "translations_v3") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("document_id", .integer)
+                    .references("documents", onDelete: .cascade)
+                t.column("page_index", .integer)
+                t.column("text_hash", .text).notNull()
+                t.column("source_text", .text).notNull()
+                t.column("target_text", .text).notNull()
+                t.column("provider", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("created_at", .datetime).notNull()
+            }
+
+            try db.execute(sql: """
+                INSERT INTO translations_v3
+                    (id, document_id, page_index, text_hash, source_text, target_text, provider, model, created_at)
+                SELECT id, document_id, page_index, text_hash, source_text, target_text, provider, model, created_at
+                FROM translations
+                """)
+            try db.drop(table: "translations")
+            try db.rename(table: "translations_v3", to: "translations")
+            try db.create(index: "idx_translations_hash",
+                          on: "translations",
+                          columns: ["text_hash"])
+            try db.create(index: "idx_translations_document",
+                          on: "translations",
+                          columns: ["document_id", "created_at"])
+        }
+
         return m
     }
 }

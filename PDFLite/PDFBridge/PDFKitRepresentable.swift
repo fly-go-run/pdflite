@@ -47,6 +47,8 @@ struct PDFKitRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ view: ReaderPDFView, context: Context) {
+        context.coordinator.attach(view: view)
+
         // Swap document only when the underlying PDFDocument actually changed.
         if view.document !== session.document {
             view.document = session.document
@@ -92,6 +94,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ view: ReaderPDFView, coordinator: Coordinator) {
+        coordinator.detachScrollObserver()
         NotificationCenter.default.removeObserver(coordinator)
     }
 
@@ -100,6 +103,8 @@ struct PDFKitRepresentable: NSViewRepresentable {
         weak var session: DocumentSession?
         weak var view: ReaderPDFView?
         var lastAppliedSearchRevision: Int = -1
+        private weak var observedClipView: NSClipView?
+        private var lastScrollOrigin: CGPoint?
 
         init(session: DocumentSession) {
             self.session = session
@@ -107,6 +112,35 @@ struct PDFKitRepresentable: NSViewRepresentable {
 
         func attach(view: ReaderPDFView) {
             self.view = view
+            attachScrollObserver(to: view)
+        }
+
+        func detachScrollObserver() {
+            if let observedClipView {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSView.boundsDidChangeNotification,
+                    object: observedClipView
+                )
+            }
+            observedClipView = nil
+            lastScrollOrigin = nil
+        }
+
+        private func attachScrollObserver(to view: ReaderPDFView) {
+            guard let clipView = view.scrollViewForObservation?.contentView,
+                  observedClipView !== clipView else { return }
+
+            detachScrollObserver()
+            observedClipView = clipView
+            lastScrollOrigin = clipView.bounds.origin
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(scrollBoundsChanged(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: clipView
+            )
         }
 
         @objc func pageChanged(_ notification: Notification) {
@@ -124,6 +158,18 @@ struct PDFKitRepresentable: NSViewRepresentable {
         @objc func selectionChanged(_ notification: Notification) {
             guard let view, let session else { return }
             session.handleSelectionChanged(SelectionService.snapshot(from: view))
+        }
+
+        @objc private func scrollBoundsChanged(_ notification: Notification) {
+            guard let clipView = notification.object as? NSClipView else { return }
+            let origin = clipView.bounds.origin
+            defer { lastScrollOrigin = origin }
+
+            guard let previous = lastScrollOrigin else { return }
+            let moved = abs(origin.x - previous.x) + abs(origin.y - previous.y)
+            guard moved > 0.5 else { return }
+
+            session?.handleScrollActivity()
         }
 
         func makeAnnotationContextMenu(for annotation: PDFAnnotation) -> NSMenu? {

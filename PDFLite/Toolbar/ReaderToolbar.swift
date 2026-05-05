@@ -107,6 +107,14 @@ struct ReaderToolbar: View {
                 Image(systemName: "magnifyingglass")
             }
             .help("Search")
+
+            Button {
+                session.isTranslationInspectorVisible.toggle()
+            } label: {
+                Image(systemName: "character.bubble")
+                    .foregroundStyle(session.isTranslationInspectorVisible ? Color.accentColor : .primary)
+            }
+            .help("Toggle Translation Inspector (⌥⌘I)")
         }
         .buttonStyle(.borderless)
         .controlSize(.regular)

@@ -1,0 +1,307 @@
+import CryptoKit
+import Foundation
+import Observation
+import os.log
+
+/// Public state of an in-flight translation. UI binds against this directly via @Observable.
+struct TranslationOutput: Equatable {
+    var sourceText: String          // raw selection text, for header display
+    var cleanedText: String         // what we actually sent to the model
+    var pageIndex: Int?
+    var partial: String             // streaming buffer (also the final value when done)
+    var isStreaming: Bool
+    var fromCache: Bool
+    var errorMessage: String?
+    var startedAt: Date
+    var completedAt: Date?
+}
+
+@MainActor
+@Observable
+final class TranslationService {
+    private let logger = Logger(subsystem: "com.pdflite.app", category: "Translation")
+    private let session: URLSession
+
+    /// The current translation request. Starts a new one cancels the previous one.
+    private(set) var current: TranslationOutput?
+    /// History for the active document — newest first. Loaded by DocumentSession on open.
+    private(set) var history: [TranslationRecord] = []
+    /// The most recent saved record. UI uses this to show "saved ✓" feedback after streaming.
+    private(set) var lastCommitted: TranslationRecord?
+
+    private var streamTask: Task<Void, Never>?
+    private var cachedConfig: TranslationConfig?
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    // MARK: - History management
+
+    func setHistory(_ records: [TranslationRecord]) {
+        history = records
+    }
+
+    func clearHistory() {
+        history = []
+        lastCommitted = nil
+    }
+
+    func reset() {
+        cancelInFlight()
+        current = nil
+        clearHistory()
+    }
+
+    // MARK: - Translate
+
+    /// Kick off a translation for `snapshot`. If a cached translation exists for the same
+    /// (cleaned text + language + model), it's served synchronously without hitting the network.
+    /// Otherwise an SSE stream is started; tokens land in `current.partial` as they arrive.
+    func translate(snapshot: SelectionSnapshot,
+                   documentId: Int64?,
+                   targetLanguage: String = TranslationConfig.defaultTargetLanguage) {
+        cancelInFlight()
+
+        let config: TranslationConfig
+        do {
+            config = try loadConfig()
+        } catch let configError as TranslationConfigError {
+            current = TranslationOutput(
+                sourceText: snapshot.rawText,
+                cleanedText: snapshot.rawText,
+                pageIndex: snapshot.pageIndex,
+                partial: "",
+                isStreaming: false,
+                fromCache: false,
+                errorMessage: [configError.errorDescription, configError.recoverySuggestion]
+                    .compactMap { $0 }
+                    .joined(separator: "\n\n"),
+                startedAt: Date(),
+                completedAt: Date()
+            )
+            return
+        } catch {
+            current = makeErrorOutput(snapshot: snapshot, message: error.localizedDescription)
+            return
+        }
+
+        let cleaned = TextCleaner.clean(snapshot.rawText)
+        let hash = Self.cacheKey(cleaned: cleaned, target: targetLanguage, model: config.model)
+
+        // Cache lookup
+        if let cached = try? TranslationRepository.shared.findCache(byHash: hash) {
+            let committed = commitCachedTranslationIfNeeded(
+                cached: cached,
+                hash: hash,
+                cleaned: cleaned,
+                snapshot: snapshot,
+                documentId: documentId,
+                model: config.model
+            )
+            current = TranslationOutput(
+                sourceText: snapshot.rawText,
+                cleanedText: cleaned,
+                pageIndex: snapshot.pageIndex,
+                partial: committed.targetText,
+                isStreaming: false,
+                fromCache: true,
+                errorMessage: nil,
+                startedAt: Date(),
+                completedAt: Date()
+            )
+            lastCommitted = committed
+            reloadHistory(documentId: documentId)
+            return
+        }
+
+        // Fresh stream
+        current = TranslationOutput(
+            sourceText: snapshot.rawText,
+            cleanedText: cleaned,
+            pageIndex: snapshot.pageIndex,
+            partial: "",
+            isStreaming: true,
+            fromCache: false,
+            errorMessage: nil,
+            startedAt: Date(),
+            completedAt: nil
+        )
+
+        let messages = PromptBuilder.messages(sourceText: cleaned, targetLanguage: targetLanguage)
+        let client = DeepSeekClient(config: config, session: session)
+
+        streamTask = Task { [weak self] in
+            await self?.consumeStream(client: client,
+                                      messages: messages,
+                                      hash: hash,
+                                      cleaned: cleaned,
+                                      snapshot: snapshot,
+                                      documentId: documentId,
+                                      model: config.model)
+        }
+    }
+
+    func cancelInFlight() {
+        streamTask?.cancel()
+        streamTask = nil
+        if var existing = current, existing.isStreaming {
+            existing.isStreaming = false
+            existing.completedAt = Date()
+            if existing.partial.isEmpty {
+                existing.errorMessage = "已取消"
+            }
+            current = existing
+        }
+    }
+
+    // MARK: - Config
+
+    /// Force a fresh read of the config file on the next translation.
+    func invalidateConfigCache() {
+        cachedConfig = nil
+    }
+
+    private func loadConfig() throws -> TranslationConfig {
+        if let cachedConfig { return cachedConfig }
+        let loaded = try ConfigLoader.load()
+        cachedConfig = loaded
+        return loaded
+    }
+
+    // MARK: - Stream consumption
+
+    private func consumeStream(client: DeepSeekClient,
+                               messages: [[String: String]],
+                               hash: String,
+                               cleaned: String,
+                               snapshot: SelectionSnapshot,
+                               documentId: Int64?,
+                               model: String) async {
+        var buffer = ""
+        var failure: Error?
+        do {
+            for try await delta in client.streamCompletion(messages: messages) {
+                if Task.isCancelled { return }
+                buffer.append(delta)
+                appendToCurrent(delta)
+            }
+        } catch {
+            failure = error
+        }
+
+        // Finalise UI state
+        if Task.isCancelled { return }
+
+        if let failure {
+            if var existing = current {
+                existing.isStreaming = false
+                existing.completedAt = Date()
+                existing.errorMessage = failure.localizedDescription
+                current = existing
+            }
+            return
+        }
+
+        let final = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !final.isEmpty else {
+            if var existing = current {
+                existing.isStreaming = false
+                existing.completedAt = Date()
+                existing.errorMessage = "DeepSeek 返回空内容"
+                current = existing
+            }
+            return
+        }
+
+        if var existing = current {
+            existing.partial = final
+            existing.isStreaming = false
+            existing.completedAt = Date()
+            current = existing
+        }
+
+        // Persist
+        let record = TranslationRecord(
+            id: nil,
+            documentId: documentId,
+            pageIndex: snapshot.pageIndex,
+            textHash: hash,
+            sourceText: cleaned,
+            targetText: final,
+            provider: TranslationConfig.provider,
+            model: model,
+            createdAt: Date()
+        )
+        do {
+            let saved = try TranslationRepository.shared.insert(record)
+            lastCommitted = saved
+            reloadHistory(documentId: documentId)
+        } catch {
+            logger.error("Failed to persist translation: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func commitCachedTranslationIfNeeded(cached: TranslationRecord,
+                                                 hash: String,
+                                                 cleaned: String,
+                                                 snapshot: SelectionSnapshot,
+                                                 documentId: Int64?,
+                                                 model: String) -> TranslationRecord {
+        guard let documentId else { return cached }
+
+        if let existing = try? TranslationRepository.shared.findInDocument(
+            textHash: hash,
+            documentId: documentId,
+            pageIndex: snapshot.pageIndex
+        ) {
+            return existing
+        }
+
+        let record = TranslationRecord(
+            id: nil,
+            documentId: documentId,
+            pageIndex: snapshot.pageIndex,
+            textHash: hash,
+            sourceText: cleaned,
+            targetText: cached.targetText,
+            provider: TranslationConfig.provider,
+            model: model,
+            createdAt: Date()
+        )
+        return (try? TranslationRepository.shared.insert(record)) ?? cached
+    }
+
+    private func reloadHistory(documentId: Int64?) {
+        guard let documentId else { return }
+        history = (try? TranslationRepository.shared.list(forDocumentId: documentId)) ?? history
+    }
+
+    private func appendToCurrent(_ delta: String) {
+        guard var existing = current else { return }
+        existing.partial.append(delta)
+        current = existing
+    }
+
+    private func makeErrorOutput(snapshot: SelectionSnapshot, message: String) -> TranslationOutput {
+        TranslationOutput(
+            sourceText: snapshot.rawText,
+            cleanedText: snapshot.rawText,
+            pageIndex: snapshot.pageIndex,
+            partial: "",
+            isStreaming: false,
+            fromCache: false,
+            errorMessage: message,
+            startedAt: Date(),
+            completedAt: Date()
+        )
+    }
+
+    // MARK: - Cache key
+
+    static func cacheKey(cleaned: String, target: String, model: String) -> String {
+        let payload = "\(cleaned)\u{1F}\(target)\u{1F}\(TranslationConfig.provider)/\(model)"
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}

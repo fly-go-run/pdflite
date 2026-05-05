@@ -78,11 +78,27 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("Tools") {
+            Button("Translate Selection") {
+                focusedSession?.translateCurrentSelection()
+            }
+            .keyboardShortcut("t", modifiers: [.command, .control])
+            .disabled(focusedSession?.hasSelection != true)
+
             Button("Highlight Selection") {
                 focusedSession?.highlightSelection()
             }
             .keyboardShortcut("h", modifiers: [.command, .control])
             .disabled(focusedSession?.hasSelection != true)
+
+            Divider()
+
+            Button(focusedSession?.isTranslationInspectorVisible == true
+                   ? "Hide Translation Inspector"
+                   : "Show Translation Inspector") {
+                focusedSession?.isTranslationInspectorVisible.toggle()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(focusedSession?.hasDocument != true)
         }
 
         CommandMenu("Go") {
