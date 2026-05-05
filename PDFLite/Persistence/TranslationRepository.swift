@@ -41,13 +41,4 @@ final class TranslationRepository {
             return fresh
         }
     }
-
-    func list(forDocumentId documentId: Int64) throws -> [TranslationRecord] {
-        try db.writer.read { db in
-            try TranslationRecord
-                .filter(Column("document_id") == documentId)
-                .order(Column("created_at").desc)
-                .fetchAll(db)
-        }
-    }
 }

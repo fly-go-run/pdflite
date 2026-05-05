@@ -226,10 +226,6 @@ final class DocumentSession {
         navigation.clear()
         selection = nil
         translation.reset()
-        if let documentId = record?.id,
-           let history = try? TranslationRepository.shared.list(forDocumentId: documentId) {
-            translation.setHistory(history)
-        }
 
         // Reading state from DB
         if let savedMode = record?.displayMode {

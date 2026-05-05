@@ -24,10 +24,6 @@ final class TranslationService {
 
     /// The current translation request. Starts a new one cancels the previous one.
     private(set) var current: TranslationOutput?
-    /// History for the active document — newest first. Loaded by DocumentSession on open.
-    private(set) var history: [TranslationRecord] = []
-    /// The most recent saved record. UI uses this to show "saved ✓" feedback after streaming.
-    private(set) var lastCommitted: TranslationRecord?
 
     private var streamTask: Task<Void, Never>?
     private var cachedConfig: TranslationConfig?
@@ -54,21 +50,9 @@ final class TranslationService {
         NotificationCenter.default.removeObserver(self)
     }
 
-    // MARK: - History management
-
-    func setHistory(_ records: [TranslationRecord]) {
-        history = records
-    }
-
-    func clearHistory() {
-        history = []
-        lastCommitted = nil
-    }
-
     func reset() {
         cancelInFlight()
         current = nil
-        clearHistory()
     }
 
     // MARK: - Translate
@@ -132,8 +116,6 @@ final class TranslationService {
                 startedAt: Date(),
                 completedAt: Date()
             )
-            lastCommitted = committed
-            reloadHistory(documentId: documentId)
             let handler = pendingOnSaved
             pendingOnSaved = nil
             handler?(committed)
@@ -262,8 +244,6 @@ final class TranslationService {
         )
         do {
             let saved = try TranslationRepository.shared.insert(record)
-            lastCommitted = saved
-            reloadHistory(documentId: documentId)
             let handler = pendingOnSaved
             pendingOnSaved = nil
             handler?(saved)
@@ -300,11 +280,6 @@ final class TranslationService {
             createdAt: Date()
         )
         return (try? TranslationRepository.shared.insert(record)) ?? cached
-    }
-
-    private func reloadHistory(documentId: Int64?) {
-        guard let documentId else { return }
-        history = (try? TranslationRepository.shared.list(forDocumentId: documentId)) ?? history
     }
 
     private func appendToCurrent(_ delta: String) {

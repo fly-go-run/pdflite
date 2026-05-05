@@ -1,10 +1,13 @@
 import PDFKit
 import SwiftUI
 
+/// Right-side inspector. Translation is the visual focus; the source text is collapsed into a
+/// disclosure group so the body of the panel is dominated by readable Chinese (the user can
+/// always glance at the PDF for the original). No history list — the cache layer makes
+/// re-translating cheap, so persisting a list view here would just clutter the panel.
 struct TranslationInspector: View {
     @Bindable var session: DocumentSession
     @State private var isSourceExpanded = false
-    @State private var historyTimeLabels: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,24 +29,12 @@ struct TranslationInspector: View {
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    currentSection
-                    if !session.translation.history.isEmpty {
-                        Divider()
-                        historySection
-                    }
-                }
-                .padding(12)
+                currentSection
+                    .padding(12)
             }
-        }
-        .onAppear {
-            refreshHistoryTimeLabels()
         }
         .onChange(of: session.translation.current?.startedAt) { _, _ in
             isSourceExpanded = false
-        }
-        .onChange(of: session.translation.history.map(historyKey)) { _, _ in
-            addMissingHistoryTimeLabels()
         }
     }
 
@@ -84,7 +75,6 @@ struct TranslationInspector: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .disclosureGroupStyle(.automatic)
 
                 if let error = translation.errorMessage {
                     Text(error)
@@ -135,71 +125,7 @@ struct TranslationInspector: View {
         }
     }
 
-    @ViewBuilder
-    private var historySection: some View {
-        let history = session.translation.history
-        if history.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("历史", systemImage: "clock")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                ForEach(history, id: \.id) { record in
-                    historyRow(record)
-                }
-            }
-        }
-    }
-
-    private func historyRow(_ record: TranslationRecord) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                if let pageIndex = record.pageIndex {
-                    session.goToPage(pageIndex)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    if let pageIndex = record.pageIndex {
-                        Text("第 \(pageIndex + 1) 页")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Text(historyTimeLabel(for: record))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(minWidth: 44, alignment: .leading)
-                    Text(record.targetText)
-                        .font(.system(size: 12))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(record.pageIndex == nil)
-            compactCopyButton(text: record.targetText)
-        }
-        .padding(.vertical, 4)
-    }
-
     private func copyButton(text: String) -> some View {
-        Button {
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(text, forType: .string)
-        } label: {
-            Label("复制", systemImage: "doc.on.doc")
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-    }
-
-    private func compactCopyButton(text: String) -> some View {
         Button {
             let pb = NSPasteboard.general
             pb.clearContents()
@@ -210,56 +136,5 @@ struct TranslationInspector: View {
         }
         .buttonStyle(.borderless)
         .help("复制译文")
-    }
-
-    private func historyTimeLabel(for record: TranslationRecord) -> String {
-        historyTimeLabels[historyKey(for: record)] ?? makeHistoryTimeLabel(from: record.createdAt)
-    }
-
-    private func refreshHistoryTimeLabels() {
-        historyTimeLabels = Dictionary(
-            uniqueKeysWithValues: session.translation.history.map { record in
-                (historyKey(for: record), makeHistoryTimeLabel(from: record.createdAt))
-            }
-        )
-    }
-
-    private func addMissingHistoryTimeLabels() {
-        let visibleKeys = Set(session.translation.history.map(historyKey))
-        var labels = historyTimeLabels.filter { visibleKeys.contains($0.key) }
-        var changed = labels.count != historyTimeLabels.count
-
-        for record in session.translation.history {
-            let key = historyKey(for: record)
-            if labels[key] == nil {
-                labels[key] = makeHistoryTimeLabel(from: record.createdAt)
-                changed = true
-            }
-        }
-
-        if changed {
-            historyTimeLabels = labels
-        }
-    }
-
-    private func historyKey(for record: TranslationRecord) -> String {
-        if let id = record.id {
-            return "id:\(id)"
-        }
-        return "pending:\(record.textHash):\(record.createdAt.timeIntervalSince1970)"
-    }
-
-    private func makeHistoryTimeLabel(from date: Date) -> String {
-        let elapsed = max(0, Int(Date().timeIntervalSince(date)))
-        if elapsed < 60 {
-            return "刚刚"
-        }
-        if elapsed < 3600 {
-            return "\(elapsed / 60) 分钟前"
-        }
-        if elapsed < 86_400 {
-            return "\(elapsed / 3600) 小时前"
-        }
-        return "\(elapsed / 86_400) 天前"
     }
 }
