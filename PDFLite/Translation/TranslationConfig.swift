@@ -5,8 +5,8 @@ struct TranslationConfig: Equatable {
     var endpoint: URL
     var model: String
 
-    static let defaultEndpoint = URL(string: "https://api.deepseek.com/v1/chat/completions")!
-    static let defaultModel = "deepseek-chat"
+    static let defaultEndpoint = URL(string: "https://api.deepseek.com/chat/completions")!
+    static let defaultModel = "deepseek-v4-flash"
     static let provider = "deepseek"
 
     /// Target language label used in the prompt + cache key. Phase 3 hard-codes Chinese; later
@@ -41,11 +41,12 @@ enum TranslationConfigError: LocalizedError {
             {
               "deepseek": {
                 "apiKey": "sk-...",
-                "endpoint": "https://api.deepseek.com/v1/chat/completions",
-                "model": "deepseek-chat"
+                "endpoint": "https://api.deepseek.com/chat/completions",
+                "model": "deepseek-v4-flash"
               }
             }
             建议执行：chmod 600 ~/.config/pdflite/config.json
+            或在 PDFLite 中按 Cmd-, 打开「设置 → 翻译」直接填写。
             """
         default:
             return nil

@@ -141,7 +141,7 @@ struct DeepSeekClient {
         case 401, 403:
             summary = "DeepSeek 拒绝认证（HTTP \(status)）：API Key 可能错误或无权限"
         case 404:
-            summary = "DeepSeek 端点 404：检查 endpoint 是否包含 /v1/chat/completions"
+            summary = "DeepSeek 端点 404：检查 endpoint 路径（应为 /chat/completions）"
         case 429:
             summary = "DeepSeek 限流（HTTP 429）：稍后再试"
         case 500...599:
