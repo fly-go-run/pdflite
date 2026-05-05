@@ -5,20 +5,10 @@ struct ReaderView: View {
     @Bindable var session: DocumentSession
 
     var body: some View {
-        HStack(spacing: 0) {
-            if session.isSidebarVisible {
-                ZStack {
-                    Color(nsColor: .controlBackgroundColor)
-                        .ignoresSafeArea()
-                    VisualEffectBackground(material: .sidebar)
-                        .ignoresSafeArea()
-                    SidebarView(session: session)
-                }
-                .frame(width: 240)
-                .transaction { $0.disablesAnimations = true }
-                Divider()
-            }
-
+        NavigationSplitView(columnVisibility: sidebarVisibility) {
+            SidebarView(session: session)
+                .navigationSplitViewColumnWidth(240)
+        } detail: {
             ZStack(alignment: .top) {
                 PDFKitRepresentable(session: session)
 
@@ -27,22 +17,20 @@ struct ReaderView: View {
                         .padding(.top, 12)
                 }
             }
-
-            if session.isTranslationInspectorVisible {
-                Divider()
-                ZStack {
-                    Color(nsColor: .controlBackgroundColor)
-                        .ignoresSafeArea()
-                    VisualEffectBackground(material: .contentBackground)
-                        .ignoresSafeArea()
-                    TranslationInspector(session: session)
-                }
-                .frame(width: 320)
-                .transaction { $0.disablesAnimations = true }
-            }
+        }
+        .inspector(isPresented: $session.isTranslationInspectorVisible) {
+            TranslationInspector(session: session)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
         }
         .toolbar {
             ReaderToolbar(session: session)
         }
+    }
+
+    private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { session.isSidebarVisible ? .all : .detailOnly },
+            set: { session.isSidebarVisible = ($0 != .detailOnly) }
+        )
     }
 }

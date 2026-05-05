@@ -10,15 +10,9 @@ struct ReaderToolbar: ToolbarContent {
     @FocusState private var pageFieldFocused: Bool
 
     var body: some ToolbarContent {
-        // Left side: sidebar toggle + back/forward.
+        // Left side: back/forward. Sidebar toggle is provided automatically by
+        // NavigationSplitView at the leading edge of the toolbar.
         ToolbarItemGroup(placement: .navigation) {
-            Button {
-                session.isSidebarVisible.toggle()
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .help("Toggle Sidebar")
-
             Button {
                 session.goBack()
             } label: {
