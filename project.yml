@@ -1,0 +1,63 @@
+name: PDFLite
+options:
+  bundleIdPrefix: com.pdflite
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  groupSortPosition: top
+  generateEmptyDirectories: false
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    SWIFT_UPCOMING_FEATURE_CONCISE_MAGIC_FILE: YES
+    CLANG_ANALYZER_NONNULL: YES
+    CLANG_ENABLE_OBJC_WEAK: YES
+    GCC_NO_COMMON_BLOCKS: YES
+    ENABLE_HARDENED_RUNTIME: NO
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    DEAD_CODE_STRIPPING: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+configs:
+  Debug: debug
+  Release: release
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "6.29.3"
+
+targets:
+  PDFLite:
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PDFLite
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pdflite.app
+        PRODUCT_NAME: PDFLite
+        INFOPLIST_FILE: PDFLite/Info.plist
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"

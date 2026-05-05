@@ -1,3 +1,10 @@
+# macOS 原生学术 PDF 阅读器：GPT 参考方案
+
+> 2026-05-05 更新：本文件保留 GPT 原始方案，最终定案见 [plan-final.md](./plan-final.md)。
+> 采纳点：Prompt 模板、MVP/不做清单、性能 checklist、Keychain、PDFKit、GRDB sidecar、右侧双语面板。
+> 修正点：主壳采用 SwiftUI，不采用纯 AppKit 全栈；不做完整多 Provider 设置系统；Qt/PDFium 跨平台路线从第一版移除；第一版不做“导出为 PDF 标准注释”。
+> DeepSeek 模型名按官方文档更新为 `deepseek-v4-flash` / `deepseek-v4-pro`，旧 `deepseek-chat` / `deepseek-reasoner` 将在 2026-07-24 废弃。
+
 从截图路径看，你主要在 macOS 上读论文。我会把方案优先按 **macOS 原生桌面端** 来做，跨平台放到第二优先级。
 
 ## 结论
@@ -254,4 +261,3 @@ Prompt 可以设计成这种风格：
 [14]: https://electronjs.org/docs/latest "Introduction | Electron"
 [15]: https://api-docs.deepseek.com/ "Your First API Call | DeepSeek API Docs"
 [16]: https://developer.apple.com/documentation/pdfkit/pdfannotation?utm_source=chatgpt.com "PDFAnnotation | Apple Developer Documentation"
-

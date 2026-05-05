@@ -1,8 +1,13 @@
 # macOS 自用学术 PDF 阅读器：精简技术方案
 
+> 2026-05-05 更新：本文件保留 Claude 原始方案，最终定案见 [plan-final.md](./plan-final.md)。
+> 采纳点：SwiftUI 主壳、PDFKit/PDFView 核心阅读区、GRDB sidecar、NSPanel 浮卡、差异化功能优先。
+> 修正点：API Key 改用 Keychain；保留轻量 `baseURL + model + targetLanguage` 配置；DeepSeek 模型名以官方文档为准，当前优先 `deepseek-v4-flash`，`deepseek-chat`/`deepseek-reasoner` 已标注将在 2026-07-24 废弃。
+> 不采纳点：把 API Key 放 `Secrets.swift`、完全硬编码 DeepSeek、不做任何设置入口。
+
 **前提条件**：自己用、不上架 MAS、不分发给他人、不商业化。这让技术选型可以大幅激进化。
 
-**最终技术栈一句话**：**SwiftUI + NSViewRepresentable 包 PDFKit + @Observable/MVVM + GRDB 旁置 SQLite + NSPanel 浮卡 + URLSession 流式 SSE 直连 DeepSeek**。无沙盒、无公证、无 Sparkle、无 Provider 抽象、无 Keychain。
+**原始技术栈一句话**：**SwiftUI + NSViewRepresentable 包 PDFKit + @Observable/MVVM + GRDB 旁置 SQLite + NSPanel 浮卡 + URLSession 流式 SSE 直连 DeepSeek**。无沙盒、无公证、无 Sparkle、无完整 Provider 抽象。Keychain 和轻量配置已在最终方案中修正为保留。
 
 预估 **6–8 周**（每周 10–15 小时）做到自用稳定版本。比商业化路线少 4–6 周，省下的时间应该投到差异化体验（Smart Jump、双语常驻面板、长 context 全文问答、与 FlowNote 联动）。
 
@@ -17,7 +22,7 @@
 | Sparkle 自动更新 | 自用直接 Xcode Run，要更新就 git pull + Cmd+R | 0.5 周 |
 | Apple Developer Program $99/年 | 同上 | $99 |
 | 多 LLM Provider 抽象 | 只用 DeepSeek（或加一个 Claude），单类硬编码即可 | 3–5 天 |
-| Keychain 存 API Key | 自用直接读 `~/.config/myreader/config.json` 或 `Secrets.swift`（gitignore） | 1–2 天 |
+| ~~Keychain 存 API Key~~ | 旧判断已废弃。最终方案保留 Keychain，避免 API Key 进入配置文件或 git 历史 | ~~1–2 天~~ |
 | 注释导出回 PDF / 跨工具兼容 | 不需要给别人传 | 3–5 天 |
 | security-scoped bookmark | 没沙盒后直接存绝对路径 | 2–3 天 |
 

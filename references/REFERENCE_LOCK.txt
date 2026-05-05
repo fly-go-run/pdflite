@@ -1,0 +1,4 @@
+ 25d4e4b77c1bcd5c116edc2f33566504a19a57d2 references/PDFAnnotationEditor (heads/master)
+ e9702fafc517c726e5d4765b72f53ca51d4e5027 references/PageFlow (v1.3.2)
+ 08b3484809a1ed43cc4552f1298bb9eb201e42eb references/macai (v2.2.0-78-g08b3484)
+ aa80dac3e5e4b520a76754099a24db9061c1ab91 references/skim (heads/master)

@@ -1,0 +1,12 @@
+[submodule "references/PageFlow"]
+	path = references/PageFlow
+	url = https://github.com/pinchen147/PageFlow
+[submodule "references/PDFAnnotationEditor"]
+	path = references/PDFAnnotationEditor
+	url = https://github.com/frameworker/PDFAnnotationEditor
+[submodule "references/skim"]
+	path = references/skim
+	url = https://github.com/JackieXie168/skim
+[submodule "references/macai"]
+	path = references/macai
+	url = https://github.com/Renset/macai
