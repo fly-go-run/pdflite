@@ -10,12 +10,17 @@ struct SelectionSnapshot {
     let lineRects: [CGRect]
     /// Verbatim text from PDFSelection — cleaning happens in TextCleaner (Phase 3).
     let rawText: String
+    /// True when the underlying selection spanned multiple PDF pages and we collapsed it to the
+    /// first page (per §5.3). UI surfaces a hint so the user knows only the first page's content
+    /// is being translated/highlighted.
+    let wasTruncatedToFirstPage: Bool
 }
 
 enum SelectionService {
     /// Build a snapshot from the PDFView's current selection. Returns nil for empty/no-page
-    /// selections. If a selection spans multiple pages we collapse to its first page — Phase 1+2
-    /// only support same-page highlights; cross-page highlight is a Phase 4 concern (§5.3).
+    /// selections. Per §5.3, cross-page selections are truncated to the first page (rects, text)
+    /// rather than dropped — that way the user still sees the action buttons and can translate /
+    /// highlight / copy what's on the first page; the snapshot carries a flag so the UI can hint.
     @MainActor
     static func snapshot(from pdfView: PDFView) -> SelectionSnapshot? {
         guard let selection = pdfView.currentSelection,
@@ -23,17 +28,17 @@ enum SelectionService {
               let document = page.document else {
             return nil
         }
-        guard selection.pages.count == 1 else { return nil }
 
+        let wasTruncated = selection.pages.count > 1
         let pageIndex = document.index(for: page)
-        let rawText = selection.string ?? ""
-        guard !rawText.isEmpty else { return nil }
 
         // selectionsByLine() splits multi-line / multi-column selections into one PDFSelection
         // per visual line. Each line's bounds(for:) gives a tight rect, so a two-column layout
-        // produces two rects per row instead of one big rect spanning the gutter.
+        // produces two rects per row instead of one big rect spanning the gutter. Filtering by
+        // `line.pages.first === page` naturally drops lines that belong to other pages.
         let lineSelections = selection.selectionsByLine()
         var rects: [CGRect] = []
+        var firstPageStrings: [String] = []
         if lineSelections.isEmpty {
             rects.append(selection.bounds(for: page))
         } else {
@@ -42,15 +47,30 @@ enum SelectionService {
                 let r = line.bounds(for: page)
                 guard r.width > 0.5, r.height > 0.5 else { continue }
                 rects.append(r)
+                if let s = line.string, !s.isEmpty {
+                    firstPageStrings.append(s)
+                }
             }
         }
         guard !rects.isEmpty else { return nil }
+
+        // Use the per-line strings when the selection crossed pages so we keep first-page text
+        // only. For single-page selections selectionsByLine sometimes splits hyphenated words
+        // unhelpfully, so fall back to the full selection string in that case.
+        let rawText: String
+        if wasTruncated, !firstPageStrings.isEmpty {
+            rawText = firstPageStrings.joined(separator: " ")
+        } else {
+            rawText = selection.string ?? ""
+        }
+        guard !rawText.isEmpty else { return nil }
 
         return SelectionSnapshot(
             pageIndex: pageIndex,
             page: page,
             lineRects: rects,
-            rawText: rawText
+            rawText: rawText,
+            wasTruncatedToFirstPage: wasTruncated
         )
     }
 }

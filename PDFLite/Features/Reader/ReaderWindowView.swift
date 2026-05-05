@@ -93,7 +93,8 @@ struct ReaderWindowView: View {
             near: rect,
             translation: session.translation.current,
             figureReference: session.currentFigureReference,
-            inspectorOpen: session.isTranslationInspectorVisible
+            inspectorOpen: session.isTranslationInspectorVisible,
+            truncatedToFirstPage: session.selection?.wasTruncatedToFirstPage ?? false
         )
     }
 
