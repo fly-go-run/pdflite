@@ -857,7 +857,6 @@ SearchState
 1. Smart Jump v0。
 2. Reference preview。
 3. Figure/Table 跳转。
-4. 全文问答。
 
 允许参考：
 
