@@ -9,6 +9,12 @@ struct PDFLiteApp: App {
     @FocusedValue(\.documentSession) private var focusedSession
 
     var body: some Scene {
+        // Read revision at the App-body level so SwiftUI's observation tracking re-evaluates the
+        // whole scene tree (and rebuilds .commands) whenever the user records a new shortcut.
+        // Without this read, observation only registers inside AppCommands.body — which doesn't
+        // trigger Scene rebuilds — and menu items keep their old key bindings until app restart.
+        let _ = shortcuts.revision
+
         WindowGroup("PDFLite") {
             ReaderWindowView()
                 .frame(minWidth: 720, minHeight: 480)
