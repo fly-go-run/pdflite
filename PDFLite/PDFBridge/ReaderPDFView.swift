@@ -1,6 +1,25 @@
 import AppKit
 import PDFKit
 
+/// Information about a Link-annotation click that resolved to an internal PDF destination.
+/// `linkText` is the glyphs that sit inside the link bounds (e.g. "[12]"), used to detect
+/// numeric references. `screenRect` is the link's bounds in screen coordinates, used to anchor
+/// any preview UI.
+struct LinkClickContext {
+    let destination: PDFDestination
+    let linkText: String?
+    let screenRect: NSRect?
+}
+
+enum LinkClickDecision {
+    /// Caller is showing a preview instead of jumping. PDFView swallows the click.
+    case preview
+    /// Caller has recorded the current page on the back stack; PDFKit performs the jump.
+    case jumpAndRecord
+    /// Caller has nothing to add; behave like an unmodified PDFView.
+    case passThrough
+}
+
 /// PDFView subclass that adds Command + scroll-wheel zoom and a right-click context menu for
 /// our highlight annotations. Everything else (touchpad pinch, regular scroll, text selection,
 /// most links) goes through PDFKit unchanged.
@@ -12,9 +31,10 @@ final class ReaderPDFView: PDFView {
 
     /// Right-click on an annotation owned by us -> caller provides the menu (delete, copy text...).
     var annotationContextMenuProvider: ((PDFAnnotation) -> NSMenu?)?
-    /// PDFKit performs internal link jumps itself. This hook lets the session record history
-    /// immediately before PDFKit handles the click.
-    var internalLinkNavigationHandler: ((PDFDestination) -> Void)?
+    /// Called when the user clicks a Link annotation that resolves to an internal destination.
+    /// Caller decides whether to preview (we swallow the click), let PDFKit jump and record
+    /// history, or fall through unchanged.
+    var linkClickHandler: ((LinkClickContext) -> LinkClickDecision)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -50,12 +70,16 @@ final class ReaderPDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if let destination = internalLinkDestination(at: event) {
-            internalLinkNavigationHandler?(destination)
-            super.mouseDown(with: event)
-            return
+        if let context = linkClickContext(at: event) {
+            switch linkClickHandler?(context) ?? .passThrough {
+            case .preview:
+                // Swallow the click so PDFKit doesn't jump. The caller is showing a preview.
+                return
+            case .jumpAndRecord, .passThrough:
+                super.mouseDown(with: event)
+                return
+            }
         }
-
         super.mouseDown(with: event)
     }
 
@@ -119,18 +143,35 @@ final class ReaderPDFView: PDFView {
         AnnotationService.persistedID(from: annotation) != nil
     }
 
-    private func internalLinkDestination(at event: NSEvent) -> PDFDestination? {
+    private func linkClickContext(at event: NSEvent) -> LinkClickContext? {
         let viewPoint = convert(event.locationInWindow, from: nil)
         guard let page = page(for: viewPoint, nearest: true) else { return nil }
         let pagePoint = convert(viewPoint, to: page)
         guard let annotation = page.annotation(at: pagePoint),
               annotation.type == "Link" else { return nil }
 
-        if let destination = annotation.destination {
-            return destination
+        let destination = annotation.destination ?? (annotation.action as? PDFActionGoTo)?.destination
+        guard let destination else { return nil }
+
+        // The text the user is actually clicking on (e.g. "[12]"), pulled by asking PDFKit which
+        // glyphs sit inside the link annotation's bounds. May be nil for image links.
+        let linkText = page.selection(for: annotation.bounds)?.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let inView = convert(annotation.bounds, from: page)
+        let screenRect: NSRect?
+        if let window {
+            let inWindow = convert(inView, to: nil)
+            screenRect = window.convertToScreen(inWindow)
+        } else {
+            screenRect = nil
         }
 
-        return (annotation.action as? PDFActionGoTo)?.destination
+        return LinkClickContext(
+            destination: destination,
+            linkText: linkText,
+            screenRect: screenRect
+        )
     }
 
     private func applyCommandScrollZoom(_ event: NSEvent) {

@@ -40,8 +40,8 @@ struct PDFKitRepresentable: NSViewRepresentable {
         view.annotationContextMenuProvider = { [weak coordinator = context.coordinator] annotation in
             coordinator?.makeAnnotationContextMenu(for: annotation)
         }
-        view.internalLinkNavigationHandler = { [weak coordinator = context.coordinator] destination in
-            coordinator?.recordInternalLinkNavigation(to: destination)
+        view.linkClickHandler = { [weak coordinator = context.coordinator] linkContext in
+            coordinator?.handleLinkClick(linkContext) ?? .passThrough
         }
 
         session.pdfView = view
@@ -202,9 +202,47 @@ struct PDFKitRepresentable: NSViewRepresentable {
             session.handleSelectionChanged(SelectionService.snapshot(from: view))
         }
 
-        func recordInternalLinkNavigation(to destination: PDFDestination) {
-            session?.recordInternalLinkNavigation(to: destination)
+        func handleLinkClick(_ context: LinkClickContext) -> LinkClickDecision {
+            guard let session else { return .passThrough }
+            // First chance: numeric reference like "[12]" — show a preview instead of jumping.
+            if let number = referenceNumber(in: context.linkText),
+               let anchor = context.screenRect,
+               session.requestReferencePreview(
+                    number: number,
+                    anchor: anchor,
+                    destination: context.destination
+               ) {
+                return .preview
+            }
+            // Otherwise behave like Smart Jump v0: record current page on the back stack and let
+            // PDFKit follow the destination.
+            session.recordInternalLinkNavigation(to: context.destination)
+            return .jumpAndRecord
         }
+
+        /// Pull the first plausible reference number out of the link's text. PDF link annotations
+        /// often wrap only the digits ("12") rather than the visible "[12]", and grouped citations
+        /// can be "[12, 13]" or "12, 13". Take the first number we find. False positives (page-number
+        /// links, TOC links) are harmless: ReferenceIndex returns nil for them, and the caller
+        /// falls through to .jumpAndRecord.
+        private func referenceNumber(in text: String?) -> Int? {
+            guard let text, !text.isEmpty else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let range = NSRange(location: 0, length: (trimmed as NSString).length)
+            guard let match = Coordinator.referencePattern.firstMatch(in: trimmed, range: range) else {
+                return nil
+            }
+            let numberRange = match.range(at: 1)
+            guard numberRange.location != NSNotFound else { return nil }
+            return Int((trimmed as NSString).substring(with: numberRange))
+        }
+
+        // First number found anywhere in the text. Matches "[12]", "12", "[12, 13]", "12-15"
+        // alike — we only care about the first integer. Keep the digit cap small (1-3) so we
+        // don't try to look up a 5-digit page anchor.
+        // swiftlint:disable:next force_try
+        private static let referencePattern = try! NSRegularExpression(pattern: #"(\d{1,3})"#)
 
         @objc private func scrollBoundsChanged(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }

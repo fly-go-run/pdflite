@@ -4,6 +4,7 @@ import SwiftUI
 struct ReaderWindowView: View {
     @State private var session = DocumentSession()
     @State private var panelController = SelectionPanelController()
+    @State private var refPanel = ReferencePreviewPanelController()
 
     var body: some View {
         Group {
@@ -17,16 +18,21 @@ struct ReaderWindowView: View {
         .onAppear {
             DocumentOpener.register(session)
             wirePanelActions()
+            wireRefPanelActions()
         }
         .onDisappear {
             session.flushReadingState()
             panelController.dismiss()
+            refPanel.dismiss()
         }
         .onChange(of: session.selectionRevision) { _, _ in
             refreshPanel()
         }
         .onChange(of: session.translation.current) { _, _ in
             refreshPanel()
+        }
+        .onChange(of: session.referencePreview) { _, _ in
+            refreshRefPanel()
         }
         .navigationTitle(session.title)
         .alert("无法打开 PDF",
@@ -53,6 +59,18 @@ struct ReaderWindowView: View {
         }
     }
 
+    private func wireRefPanelActions() {
+        refPanel.onJump = {
+            session.jumpToReferencePreview()
+        }
+        refPanel.onCopy = {
+            session.copyReferencePreviewEntry()
+        }
+        refPanel.onClose = {
+            session.dismissReferencePreview()
+        }
+    }
+
     private func refreshPanel() {
         guard session.hasSelection,
               let rect = session.selectionScreenRect() else {
@@ -60,5 +78,13 @@ struct ReaderWindowView: View {
             return
         }
         panelController.present(near: rect, translation: session.translation.current)
+    }
+
+    private func refreshRefPanel() {
+        guard let preview = session.referencePreview else {
+            refPanel.dismiss()
+            return
+        }
+        refPanel.present(near: preview.anchor, entry: preview.entry)
     }
 }

@@ -5,6 +5,23 @@ import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Snapshot of the bibliography entry being previewed plus the on-screen anchor used to position
+/// the floating panel. `destination` is the original link destination (when known); we use it for
+/// the "jump" button so the user lands at the exact entry instead of the top of the page.
+/// Equality intentionally ignores `destination` since `PDFDestination` doesn't conform to
+/// `Equatable`, and the entry+anchor pair is enough to detect "is this the same preview".
+struct ReferencePreviewState {
+    let entry: ReferenceEntry
+    let anchor: NSRect
+    let destination: PDFDestination?
+}
+
+extension ReferencePreviewState: Equatable {
+    static func == (lhs: ReferencePreviewState, rhs: ReferencePreviewState) -> Bool {
+        lhs.entry == rhs.entry && lhs.anchor == rhs.anchor
+    }
+}
+
 enum SidebarTab: String, CaseIterable, Identifiable {
     case outline
     case thumbnails
@@ -66,6 +83,11 @@ final class DocumentSession {
     private(set) var selection: SelectionSnapshot?
     private(set) var selectionRevision: Int = 0
     private(set) var annotationService: AnnotationService?
+
+    // MARK: - Reference preview (Phase 4 v0)
+    private(set) var referencePreview: ReferencePreviewState?
+    @ObservationIgnored private var referenceIndex: ReferenceIndex?
+    @ObservationIgnored private var referenceIndexPrepareTask: Task<Void, Never>?
 
     // MARK: - PDFView ref
     weak var pdfView: ReaderPDFView?
@@ -185,6 +207,18 @@ final class DocumentSession {
         currentPageIndex = max(0, min(doc.pageCount - 1, record?.lastPage ?? 0))
         outlineRoot = doc.outlineRoot.flatMap { OutlineItem(outline: $0) }
         annotationService = AnnotationService(document: doc)
+        let newReferenceIndex = ReferenceIndex(document: doc)
+        referenceIndex = newReferenceIndex
+        referencePreview = nil
+        referenceIndexPrepareTask?.cancel()
+        // Build the bibliography index off the click path. Wait a couple of seconds so we don't
+        // pile onto the page warmup queue while the user is still seeing the first page render.
+        referenceIndexPrepareTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            if Task.isCancelled { return }
+            guard let self, self.referenceIndex === newReferenceIndex else { return }
+            await newReferenceIndex.prepare()
+        }
         search.clear()
         navigation.clear()
         selection = nil
@@ -230,6 +264,10 @@ final class DocumentSession {
         currentPageIndex = 0
         outlineRoot = nil
         annotationService = nil
+        referenceIndexPrepareTask?.cancel()
+        referenceIndexPrepareTask = nil
+        referenceIndex = nil
+        referencePreview = nil
         selection = nil
         search.clear()
         translation.reset()
@@ -401,6 +439,45 @@ final class DocumentSession {
         // Drop the selection so the user gets visual confirmation that the highlight committed.
         pdfView?.clearTextSelection()
         selection = nil
+    }
+
+    // MARK: - Reference preview
+
+    /// Try to show a reference preview for `[number]`. Returns true when an entry was found and
+    /// the preview state was updated; false means the bibliography didn't have this number and
+    /// the caller should fall back to plain navigation.
+    @discardableResult
+    func requestReferencePreview(number: Int, anchor: NSRect, destination: PDFDestination?) -> Bool {
+        guard let entry = referenceIndex?.entry(forNumber: number) else { return false }
+        referencePreview = ReferencePreviewState(entry: entry, anchor: anchor, destination: destination)
+        // PDFKit normally clears the selection on link-click via super.mouseDown; we swallow the
+        // event when previewing, so do it ourselves. Selection panel auto-dismisses through the
+        // PDFViewSelectionChanged → handleSelectionChanged → selectionRevision chain.
+        pdfView?.clearTextSelection()
+        return true
+    }
+
+    func dismissReferencePreview() {
+        referencePreview = nil
+    }
+
+    /// Jump to the bibliography entry currently being previewed. Uses the link's destination when
+    /// available so the user lands at the exact entry, not just the page top.
+    func jumpToReferencePreview() {
+        guard let preview = referencePreview else { return }
+        referencePreview = nil
+        if let destination = preview.destination {
+            goToDestination(destination)
+        } else {
+            goToPage(preview.entry.pageIndex)
+        }
+    }
+
+    func copyReferencePreviewEntry() {
+        guard let preview = referencePreview else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("[\(preview.entry.number)] \(preview.entry.text)", forType: .string)
     }
 
     // MARK: - Translation
