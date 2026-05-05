@@ -53,7 +53,7 @@ private struct OutlineItemLabel: View {
     var body: some View {
         Button {
             if let dest = item.destination {
-                session.pdfView?.go(to: dest)
+                session.goToDestination(dest)
             } else if let pageIndex = item.pageIndex {
                 session.goToPage(pageIndex)
             }

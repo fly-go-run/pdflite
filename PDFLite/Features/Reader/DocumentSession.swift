@@ -56,6 +56,9 @@ final class DocumentSession {
     private(set) var outlineRoot: OutlineItem?
     var search = SearchService()
 
+    // MARK: - Navigation history (Smart Jump v0)
+    var navigation = NavigationHistoryService()
+
     // MARK: - Translation
     var translation = TranslationService()
 
@@ -183,6 +186,7 @@ final class DocumentSession {
         outlineRoot = doc.outlineRoot.flatMap { OutlineItem(outline: $0) }
         annotationService = AnnotationService(document: doc)
         search.clear()
+        navigation.clear()
         selection = nil
         translation.reset()
         if let documentId = record?.id,
@@ -229,6 +233,7 @@ final class DocumentSession {
         selection = nil
         search.clear()
         translation.reset()
+        navigation.clear()
         isTranslationInspectorVisible = false
     }
 
@@ -253,12 +258,39 @@ final class DocumentSession {
     }
 
     // MARK: - Navigation
+    //
+    // Public goTo* are user-perceived jumps and push the current location onto the back stack.
+    // nextPage/previousPage are continuous reading and do NOT push. goBack/goForward swap entries
+    // between back and forward stacks without ever pushing — that's what keeps Cmd-[ / Cmd-]
+    // cycles stable.
 
     func goToPage(_ index: Int) {
         guard let document, let pdfView,
               index >= 0, index < document.pageCount,
-              let page = document.page(at: index) else { return }
+              let page = document.page(at: index),
+              index != currentPageIndex else { return }
+        recordCurrentForHistory()
         pdfView.go(to: page)
+    }
+
+    func goToDestination(_ destination: PDFDestination) {
+        guard let pdfView else { return }
+        recordCurrentForHistory()
+        pdfView.go(to: destination)
+    }
+
+    func goToSelection(_ selection: PDFSelection) {
+        guard let pdfView else { return }
+        recordCurrentForHistory()
+        pdfView.go(to: selection)
+    }
+
+    func recordInternalLinkNavigation(to destination: PDFDestination) {
+        guard let document, let targetPage = destination.page else { return }
+        let targetIndex = document.index(for: targetPage)
+        guard targetIndex != NSNotFound,
+              targetIndex != currentPageIndex else { return }
+        recordCurrentForHistory()
     }
 
     func nextPage() {
@@ -272,14 +304,45 @@ final class DocumentSession {
     }
 
     func goToFirstPage() {
-        guard let document, let pdfView, let page = document.page(at: 0) else { return }
+        guard let document, let pdfView,
+              let page = document.page(at: 0),
+              currentPageIndex != 0 else { return }
+        recordCurrentForHistory()
         pdfView.go(to: page)
     }
 
     func goToLastPage() {
         guard let document, let pdfView,
               document.pageCount > 0,
-              let page = document.page(at: document.pageCount - 1) else { return }
+              let page = document.page(at: document.pageCount - 1),
+              currentPageIndex != document.pageCount - 1 else { return }
+        recordCurrentForHistory()
+        pdfView.go(to: page)
+    }
+
+    func goBack() {
+        guard let entry = navigation.goBack(saving: currentNavigationEntry()) else { return }
+        applyNavigationEntry(entry)
+    }
+
+    func goForward() {
+        guard let entry = navigation.goForward(saving: currentNavigationEntry()) else { return }
+        applyNavigationEntry(entry)
+    }
+
+    private func currentNavigationEntry() -> NavigationEntry? {
+        guard hasDocument else { return nil }
+        return NavigationEntry(pageIndex: currentPageIndex)
+    }
+
+    private func recordCurrentForHistory() {
+        navigation.recordJump(from: currentNavigationEntry())
+    }
+
+    private func applyNavigationEntry(_ entry: NavigationEntry) {
+        guard let pdfView, let document,
+              entry.pageIndex >= 0, entry.pageIndex < document.pageCount,
+              let page = document.page(at: entry.pageIndex) else { return }
         pdfView.go(to: page)
     }
 

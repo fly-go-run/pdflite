@@ -3,7 +3,7 @@ import PDFKit
 
 /// PDFView subclass that adds Command + scroll-wheel zoom and a right-click context menu for
 /// our highlight annotations. Everything else (touchpad pinch, regular scroll, text selection,
-/// links) goes through PDFKit unchanged.
+/// most links) goes through PDFKit unchanged.
 final class ReaderPDFView: PDFView {
     /// How aggressive Cmd+scroll zoom is. 0.0025 → ~1.4x per 100 px of wheel travel.
     var commandScrollZoomSensitivity: CGFloat = 0.0025
@@ -12,6 +12,9 @@ final class ReaderPDFView: PDFView {
 
     /// Right-click on an annotation owned by us -> caller provides the menu (delete, copy text...).
     var annotationContextMenuProvider: ((PDFAnnotation) -> NSMenu?)?
+    /// PDFKit performs internal link jumps itself. This hook lets the session record history
+    /// immediately before PDFKit handles the click.
+    var internalLinkNavigationHandler: ((PDFDestination) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -44,6 +47,16 @@ final class ReaderPDFView: PDFView {
             return
         }
         applyCommandScrollZoom(event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let destination = internalLinkDestination(at: event) {
+            internalLinkNavigationHandler?(destination)
+            super.mouseDown(with: event)
+            return
+        }
+
+        super.mouseDown(with: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -104,6 +117,20 @@ final class ReaderPDFView: PDFView {
 
     private func isPDFLiteAnnotation(_ annotation: PDFAnnotation) -> Bool {
         AnnotationService.persistedID(from: annotation) != nil
+    }
+
+    private func internalLinkDestination(at event: NSEvent) -> PDFDestination? {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        guard let page = page(for: viewPoint, nearest: true) else { return nil }
+        let pagePoint = convert(viewPoint, to: page)
+        guard let annotation = page.annotation(at: pagePoint),
+              annotation.type == "Link" else { return nil }
+
+        if let destination = annotation.destination {
+            return destination
+        }
+
+        return (annotation.action as? PDFActionGoTo)?.destination
     }
 
     private func applyCommandScrollZoom(_ event: NSEvent) {

@@ -40,6 +40,9 @@ struct PDFKitRepresentable: NSViewRepresentable {
         view.annotationContextMenuProvider = { [weak coordinator = context.coordinator] annotation in
             coordinator?.makeAnnotationContextMenu(for: annotation)
         }
+        view.internalLinkNavigationHandler = { [weak coordinator = context.coordinator] destination in
+            coordinator?.recordInternalLinkNavigation(to: destination)
+        }
 
         session.pdfView = view
         context.coordinator.attach(view: view)
@@ -84,7 +87,9 @@ struct PDFKitRepresentable: NSViewRepresentable {
                 context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
                 current.color = .orange
                 view.setCurrentSelection(current, animate: false)
-                view.go(to: current)
+                // Route through session.goToSelection so the pre-jump location goes onto the
+                // back stack — Cmd-[ then returns to where the user was before searching.
+                session.goToSelection(current)
             }
             view.highlightedSelections = highlighted
         } else {
@@ -195,6 +200,10 @@ struct PDFKitRepresentable: NSViewRepresentable {
         @objc func selectionChanged(_ notification: Notification) {
             guard let view, let session else { return }
             session.handleSelectionChanged(SelectionService.snapshot(from: view))
+        }
+
+        func recordInternalLinkNavigation(to destination: PDFDestination) {
+            session?.recordInternalLinkNavigation(to: destination)
         }
 
         @objc private func scrollBoundsChanged(_ notification: Notification) {

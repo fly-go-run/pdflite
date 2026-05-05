@@ -119,6 +119,16 @@ struct AppCommands: Commands {
             Button("Last Page") { focusedSession?.goToLastPage() }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(focusedSession?.hasDocument != true)
+
+            Divider()
+
+            Button("Back") { focusedSession?.goBack() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(focusedSession?.navigation.canGoBack != true)
+
+            Button("Forward") { focusedSession?.goForward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(focusedSession?.navigation.canGoForward != true)
         }
     }
 }

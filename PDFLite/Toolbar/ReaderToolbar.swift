@@ -17,6 +17,26 @@ struct ReaderToolbar: View {
 
             Divider().frame(height: 18)
 
+            HStack(spacing: 4) {
+                Button {
+                    session.goBack()
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .disabled(!session.navigation.canGoBack)
+                .help("Back (⌘[)")
+
+                Button {
+                    session.goForward()
+                } label: {
+                    Image(systemName: "chevron.forward")
+                }
+                .disabled(!session.navigation.canGoForward)
+                .help("Forward (⌘])")
+            }
+
+            Divider().frame(height: 18)
+
             Text(session.title)
                 .font(.headline)
                 .lineLimit(1)
