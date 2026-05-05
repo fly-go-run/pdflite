@@ -1,13 +1,17 @@
 import PDFKit
 import SwiftUI
 
-struct ReaderToolbar: View {
+/// Reader toolbar items, attached via `.toolbar { ReaderToolbar(...) }` so they live in the
+/// macOS title bar (single-row with `.windowToolbarStyle(.unified)`). No standalone HStack any
+/// more — that used to consume an extra ~36 px under the system title bar for no reason.
+struct ReaderToolbar: ToolbarContent {
     @Bindable var session: DocumentSession
     @State private var pageInputBuffer: String = ""
     @FocusState private var pageFieldFocused: Bool
 
-    var body: some View {
-        HStack(spacing: 12) {
+    var body: some ToolbarContent {
+        // Left side: sidebar toggle + back/forward.
+        ToolbarItemGroup(placement: .navigation) {
             Button {
                 session.isSidebarVisible.toggle()
             } label: {
@@ -15,100 +19,79 @@ struct ReaderToolbar: View {
             }
             .help("Toggle Sidebar")
 
-            Divider().frame(height: 18)
-
-            HStack(spacing: 4) {
-                Button {
-                    session.goBack()
-                } label: {
-                    Image(systemName: "chevron.backward")
-                }
-                .disabled(!session.navigation.canGoBack)
-                .help("Back (⌘[)")
-
-                Button {
-                    session.goForward()
-                } label: {
-                    Image(systemName: "chevron.forward")
-                }
-                .disabled(!session.navigation.canGoForward)
-                .help("Forward (⌘])")
+            Button {
+                session.goBack()
+            } label: {
+                Image(systemName: "chevron.backward")
             }
+            .disabled(!session.navigation.canGoBack)
+            .help("Back (⌘[)")
 
-            Divider().frame(height: 18)
-
-            Text(session.title)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Spacer()
-
-            HStack(spacing: 4) {
-                Button {
-                    session.previousPage()
-                } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .disabled(!session.canGoPrevious)
-                .help("Previous Page")
-
-                pageInputField
-
-                Text("/ \(session.pageCount)")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-
-                Button {
-                    session.nextPage()
-                } label: {
-                    Image(systemName: "chevron.right")
-                }
-                .disabled(!session.canGoNext)
-                .help("Next Page")
+            Button {
+                session.goForward()
+            } label: {
+                Image(systemName: "chevron.forward")
             }
+            .disabled(!session.navigation.canGoForward)
+            .help("Forward (⌘])")
+        }
 
-            Divider().frame(height: 18)
-
-            HStack(spacing: 4) {
-                Button {
-                    session.zoomOut()
-                } label: {
-                    Image(systemName: "minus.magnifyingglass")
-                }
-                .help("Zoom Out")
-
-                Text(zoomPercent)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(minWidth: 48, alignment: .trailing)
-
-                Button {
-                    session.zoomIn()
-                } label: {
-                    Image(systemName: "plus.magnifyingglass")
-                }
-                .help("Zoom In")
-
-                Button("Fit") {
-                    session.fitWidth()
-                }
-                .help("Fit Width")
-
-                Button("100%") {
-                    session.actualSize()
-                }
-                .help("Actual Size")
+        // Right side: page nav + zoom + display mode + highlight + search + translation.
+        // System shows the document title automatically (via .navigationTitle), so we don't
+        // include our own title text here.
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                session.previousPage()
+            } label: {
+                Image(systemName: "chevron.left")
             }
+            .disabled(!session.canGoPrevious)
+            .help("Previous Page")
 
-            Divider().frame(height: 18)
+            pageInputField
+
+            Text("/ \(session.pageCount)")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+
+            Button {
+                session.nextPage()
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(!session.canGoNext)
+            .help("Next Page")
+
+            Button {
+                session.zoomOut()
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .help("Zoom Out")
+
+            Text(zoomPercent)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(minWidth: 44, alignment: .trailing)
+
+            Button {
+                session.zoomIn()
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .help("Zoom In")
+
+            Button("Fit") {
+                session.fitWidth()
+            }
+            .help("Fit Width")
 
             Picker("", selection: $session.displayMode) {
                 Image(systemName: "doc.text").tag(PDFDisplayMode.singlePageContinuous)
                 Image(systemName: "rectangle.split.2x1").tag(PDFDisplayMode.twoUpContinuous)
             }
             .pickerStyle(.segmented)
-            .frame(width: 96)
+            .frame(width: 84)
             .help("Display Mode")
 
             if session.hasSelection {
@@ -136,12 +119,6 @@ struct ReaderToolbar: View {
             }
             .help("Toggle Translation Inspector (⌥⌘I)")
         }
-        .buttonStyle(.borderless)
-        .controlSize(.regular)
-        .onChange(of: session.currentPageIndex) { _, _ in
-            syncPageInput()
-        }
-        .onAppear { syncPageInput() }
     }
 
     private var zoomPercent: String {
@@ -151,7 +128,7 @@ struct ReaderToolbar: View {
     private var pageInputField: some View {
         TextField("", text: $pageInputBuffer)
             .textFieldStyle(.roundedBorder)
-            .frame(width: 56)
+            .frame(width: 48)
             .multilineTextAlignment(.center)
             .focused($pageFieldFocused)
             .onSubmit {
@@ -159,6 +136,10 @@ struct ReaderToolbar: View {
             }
             .onChange(of: pageFieldFocused) { _, focused in
                 if !focused { syncPageInput() }
+            }
+            .onAppear { syncPageInput() }
+            .onChange(of: session.currentPageIndex) { _, _ in
+                syncPageInput()
             }
     }
 
