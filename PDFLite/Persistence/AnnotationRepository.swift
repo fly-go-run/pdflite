@@ -27,4 +27,16 @@ final class AnnotationRepository {
             try AnnotationRecord.filter(Column("id") == id).deleteAll(db)
         }
     }
+
+    func updateTranslationId(annotationId: String, translationId: Int64?) throws {
+        _ = try db.writer.write { db in
+            try AnnotationRecord
+                .filter(Column("id") == annotationId)
+                .updateAll(
+                    db,
+                    Column("translation_id").set(to: translationId),
+                    Column("updated_at").set(to: Date())
+                )
+        }
+    }
 }

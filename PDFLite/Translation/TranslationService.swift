@@ -31,9 +31,27 @@ final class TranslationService {
 
     private var streamTask: Task<Void, Never>?
     private var cachedConfig: TranslationConfig?
+    /// Callback supplied with `translate()` to notify a successful save. Cleared on cancel/replace
+    /// so a stale handler can't fire against a new translation.
+    private var pendingOnSaved: ((TranslationRecord) -> Void)?
 
     init(session: URLSession = .shared) {
         self.session = session
+        // Settings UI posts this after rewriting ~/.config/pdflite/config.json. Drop the cache so
+        // the next translate() call picks up the new key/endpoint/model without restarting the app.
+        NotificationCenter.default.addObserver(
+            forName: ConfigLoader.configChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.invalidateConfigCache()
+            }
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - History management
@@ -58,10 +76,14 @@ final class TranslationService {
     /// Kick off a translation for `snapshot`. If a cached translation exists for the same
     /// (cleaned text + language + model), it's served synchronously without hitting the network.
     /// Otherwise an SSE stream is started; tokens land in `current.partial` as they arrive.
+    /// `onSaved` fires once when a row is committed (cache hit or stream finish). Errors and
+    /// cancellation never call it.
     func translate(snapshot: SelectionSnapshot,
                    documentId: Int64?,
-                   targetLanguage: String = TranslationConfig.defaultTargetLanguage) {
+                   targetLanguage: String = TranslationConfig.defaultTargetLanguage,
+                   onSaved: ((TranslationRecord) -> Void)? = nil) {
         cancelInFlight()
+        pendingOnSaved = onSaved
 
         let config: TranslationConfig
         do {
@@ -112,6 +134,9 @@ final class TranslationService {
             )
             lastCommitted = committed
             reloadHistory(documentId: documentId)
+            let handler = pendingOnSaved
+            pendingOnSaved = nil
+            handler?(committed)
             return
         }
 
@@ -145,6 +170,8 @@ final class TranslationService {
     func cancelInFlight() {
         streamTask?.cancel()
         streamTask = nil
+        // Drop any outstanding bind callback — we don't want it to fire against a fresh request.
+        pendingOnSaved = nil
         if var existing = current, existing.isStreaming {
             existing.isStreaming = false
             existing.completedAt = Date()
@@ -237,6 +264,9 @@ final class TranslationService {
             let saved = try TranslationRepository.shared.insert(record)
             lastCommitted = saved
             reloadHistory(documentId: documentId)
+            let handler = pendingOnSaved
+            pendingOnSaved = nil
+            handler?(saved)
         } catch {
             logger.error("Failed to persist translation: \(error.localizedDescription, privacy: .public)")
         }

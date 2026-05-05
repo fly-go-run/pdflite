@@ -79,6 +79,9 @@ final class DocumentSession {
     // MARK: - Translation
     var translation = TranslationService()
 
+    // MARK: - Settings
+    @ObservationIgnored let readerSettings = ReaderSettings.shared
+
     // MARK: - Selection & annotations
     private(set) var selection: SelectionSnapshot?
     private(set) var selectionRevision: Int = 0
@@ -420,6 +423,8 @@ final class DocumentSession {
     // MARK: - Annotation
 
     /// Highlight the current selection. No-op if there's no selection or no document record.
+    /// When the auto-translate-on-highlight setting is on, also kicks off a translation and
+    /// writes the resulting translation row id back onto the annotation when the request lands.
     func highlightSelection() {
         guard let snapshot = selection,
               let documentId,
@@ -436,6 +441,25 @@ final class DocumentSession {
             loadError = "无法保存高亮：\(error.localizedDescription)"
             return
         }
+
+        if readerSettings.autoTranslateOnHighlight {
+            isTranslationInspectorVisible = true
+            let annotationId = record.id
+            translation.translate(snapshot: snapshot, documentId: documentId) { [weak self] saved in
+                guard let self, let translationId = saved.id else { return }
+                do {
+                    try AnnotationRepository.shared.updateTranslationId(
+                        annotationId: annotationId,
+                        translationId: translationId
+                    )
+                } catch {
+                    self.logger.error(
+                        "Failed to bind translation to highlight: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+        }
+
         // Drop the selection so the user gets visual confirmation that the highlight committed.
         pdfView?.clearTextSelection()
         selection = nil

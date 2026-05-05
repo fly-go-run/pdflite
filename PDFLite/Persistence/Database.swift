@@ -128,6 +128,16 @@ final class Database {
                           columns: ["document_id", "created_at"])
         }
 
+        m.registerMigration("v4_annotation_translation_binding") { db in
+            // Auto-translate-on-highlight: each highlight may carry a pointer to the translation
+            // it was created with. ON DELETE SET NULL so deleting a translation row doesn't
+            // cascade-delete the highlight.
+            try db.alter(table: "annotations") { t in
+                t.add(column: "translation_id", .integer)
+                    .references("translations", onDelete: .setNull)
+            }
+        }
+
         return m
     }
 }

@@ -16,5 +16,9 @@ struct PDFLiteApp: App {
         .commands {
             AppCommands(focusedSession: focusedSession, recentFiles: recentFiles)
         }
+
+        Settings {
+            SettingsView()
+        }
     }
 }

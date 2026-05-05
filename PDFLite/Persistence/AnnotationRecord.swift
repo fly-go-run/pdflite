@@ -12,6 +12,7 @@ struct AnnotationRecord: Codable, FetchableRecord, PersistableRecord, Equatable 
     var color: String?              // "#RRGGBBAA"
     var selectedText: String?
     var noteContent: String?
+    var translationId: Int64?       // bound translation row, set by auto-translate-on-highlight
     var createdAt: Date
     var updatedAt: Date
 
@@ -24,6 +25,7 @@ struct AnnotationRecord: Codable, FetchableRecord, PersistableRecord, Equatable 
         case color
         case selectedText = "selected_text"
         case noteContent = "note_content"
+        case translationId = "translation_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

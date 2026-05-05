@@ -68,6 +68,7 @@ final class AnnotationService {
             color: Self.defaultHighlightHex,
             selectedText: snapshot.rawText,
             noteContent: nil,
+            translationId: nil,
             createdAt: now,
             updatedAt: now
         )
