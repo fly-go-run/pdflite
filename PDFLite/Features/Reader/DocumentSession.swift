@@ -627,6 +627,18 @@ final class DocumentSession {
         autoSelectionActionTask?.cancel()
         autoSelectionActionTask = nil
 
+        // Search drives PDFView's currentSelection programmatically (set on every match jump).
+        // Those notifications hit this same callback and would otherwise look identical to a
+        // user gesture, kicking off auto-translate / auto-highlight. Bail out here, and clear
+        // any stale selection so the floating panel doesn't linger over a search hit.
+        if isSearchVisible {
+            if selection != nil {
+                selection = nil
+                selectionRevision += 1
+            }
+            return
+        }
+
         let streaming = translation.current?.isStreaming == true
         let shouldRestartStreamingTranslation = streaming
             && snapshot != nil
