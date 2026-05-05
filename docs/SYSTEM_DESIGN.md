@@ -54,7 +54,7 @@ PDFLite 第一版是一个 macOS 原生学术论文 PDF 阅读器，不是文献
 
 1. GRDB.swift。
 2. swift-markdown-ui。
-3. KeyboardShortcuts，仅在需要 FlowNote 联动或全局快捷键时使用。
+3. KeyboardShortcuts，仅在需要全局快捷键时使用。
 
 其他依赖必须先经过用户确认。
 
@@ -439,7 +439,6 @@ TranslationService：
 3. 显示当前选区译文。
 4. 显示历史翻译列表。
 5. 每条记录显示页码、原文摘要、译文、复制、跳回原文、保存为笔记。
-6. 后续可作为 FlowNote 联动入口。
 
 约束：
 
@@ -859,7 +858,6 @@ SearchState
 2. Reference preview。
 3. Figure/Table 跳转。
 4. 全文问答。
-5. FlowNote 联动。
 
 允许参考：
 
@@ -872,7 +870,6 @@ SearchState
 1. 常见 `[12]` 引用能识别并预览 References 条目。
 2. Figure/Table 能通过全文搜索定位候选页。
 3. 支持返回阅读位置。
-4. FlowNote 联动不影响核心阅读流程。
 
 ## 11. 测试策略
 
