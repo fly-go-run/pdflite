@@ -73,7 +73,7 @@ struct AppCommands: Commands {
             Button(focusedSession?.isSidebarVisible == true ? "Hide Sidebar" : "Show Sidebar") {
                 focusedSession?.isSidebarVisible.toggle()
             }
-            .keyboardShortcut("s", modifiers: [.command, .option])
+            .keyboardShortcut("b", modifiers: .command)
             .disabled(focusedSession?.hasDocument != true)
         }
 
