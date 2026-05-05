@@ -5,9 +5,12 @@ import UniformTypeIdentifiers
 struct AppCommands: Commands {
     let focusedSession: DocumentSession?
     @Bindable var recentFiles: RecentFilesService
+    @Bindable var shortcuts: AppShortcuts
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            // Cmd+O is platform-standard; we keep it hard-coded so the customizable list isn't
+            // crowded with defaults users won't change anyway.
             Button("Open…") {
                 focusedSession?.presentOpenPanel()
             }
@@ -41,19 +44,19 @@ struct AppCommands: Commands {
 
         CommandMenu("View") {
             Button("Zoom In") { focusedSession?.zoomIn() }
-                .keyboardShortcut("+", modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .zoomIn))
                 .disabled(focusedSession?.hasDocument != true)
 
             Button("Zoom Out") { focusedSession?.zoomOut() }
-                .keyboardShortcut("-", modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .zoomOut))
                 .disabled(focusedSession?.hasDocument != true)
 
             Button("Actual Size") { focusedSession?.actualSize() }
-                .keyboardShortcut("1", modifiers: [.command, .option])
+                .keyboardShortcut(shortcuts.value(for: .actualSize))
                 .disabled(focusedSession?.hasDocument != true)
 
             Button("Fit Width") { focusedSession?.fitWidth() }
-                .keyboardShortcut("0", modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .fitWidth))
                 .disabled(focusedSession?.hasDocument != true)
 
             Divider()
@@ -73,7 +76,7 @@ struct AppCommands: Commands {
             Button(focusedSession?.isSidebarVisible == true ? "Hide Sidebar" : "Show Sidebar") {
                 focusedSession?.isSidebarVisible.toggle()
             }
-            .keyboardShortcut("b", modifiers: .command)
+            .keyboardShortcut(shortcuts.value(for: .toggleSidebar))
             .disabled(focusedSession?.hasDocument != true)
         }
 
@@ -81,13 +84,13 @@ struct AppCommands: Commands {
             Button("Translate Selection") {
                 focusedSession?.translateCurrentSelection()
             }
-            .keyboardShortcut("t", modifiers: [.command, .control])
+            .keyboardShortcut(shortcuts.value(for: .translateSelection))
             .disabled(focusedSession?.hasSelection != true)
 
             Button("Highlight Selection") {
                 focusedSession?.highlightSelection()
             }
-            .keyboardShortcut("h", modifiers: [.command, .control])
+            .keyboardShortcut(shortcuts.value(for: .highlightSelection))
             .disabled(focusedSession?.hasSelection != true)
 
             Divider()
@@ -97,37 +100,37 @@ struct AppCommands: Commands {
                    : "Show Translation Inspector") {
                 focusedSession?.isTranslationInspectorVisible.toggle()
             }
-            .keyboardShortcut("i", modifiers: [.command, .option])
+            .keyboardShortcut(shortcuts.value(for: .toggleInspector))
             .disabled(focusedSession?.hasDocument != true)
         }
 
         CommandMenu("Go") {
             Button("Next Page") { focusedSession?.nextPage() }
-                .keyboardShortcut(.rightArrow, modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .nextPage))
                 .disabled(focusedSession?.canGoNext != true)
 
             Button("Previous Page") { focusedSession?.previousPage() }
-                .keyboardShortcut(.leftArrow, modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .previousPage))
                 .disabled(focusedSession?.canGoPrevious != true)
 
             Divider()
 
             Button("First Page") { focusedSession?.goToFirstPage() }
-                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .keyboardShortcut(shortcuts.value(for: .firstPage))
                 .disabled(focusedSession?.hasDocument != true)
 
             Button("Last Page") { focusedSession?.goToLastPage() }
-                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .keyboardShortcut(shortcuts.value(for: .lastPage))
                 .disabled(focusedSession?.hasDocument != true)
 
             Divider()
 
             Button("Back") { focusedSession?.goBack() }
-                .keyboardShortcut("[", modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .goBack))
                 .disabled(focusedSession?.navigation.canGoBack != true)
 
             Button("Forward") { focusedSession?.goForward() }
-                .keyboardShortcut("]", modifiers: .command)
+                .keyboardShortcut(shortcuts.value(for: .goForward))
                 .disabled(focusedSession?.navigation.canGoForward != true)
         }
     }

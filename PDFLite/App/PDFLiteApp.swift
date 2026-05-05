@@ -4,6 +4,7 @@ import SwiftUI
 struct PDFLiteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var recentFiles = RecentFilesService.shared
+    @State private var shortcuts = AppShortcuts.shared
 
     @FocusedValue(\.documentSession) private var focusedSession
 
@@ -14,7 +15,11 @@ struct PDFLiteApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
-            AppCommands(focusedSession: focusedSession, recentFiles: recentFiles)
+            AppCommands(
+                focusedSession: focusedSession,
+                recentFiles: recentFiles,
+                shortcuts: shortcuts
+            )
         }
 
         Settings {

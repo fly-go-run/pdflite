@@ -38,12 +38,17 @@ packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
     from: "6.29.3"
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: "2.0.0"
 
 targets:
   PDFLite:
     dependencies:
       - package: GRDB
         product: GRDB
+      - package: KeyboardShortcuts
+        product: KeyboardShortcuts
     type: application
     platform: macOS
     deploymentTarget: "14.0"

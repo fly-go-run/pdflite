@@ -1,4 +1,5 @@
 import AppKit
+import KeyboardShortcuts
 import SwiftUI
 
 /// Macos `Settings { ... }` window content. Three tabs: 翻译 (DeepSeek API config), 阅读
@@ -159,80 +160,52 @@ private struct ReadingSettingsView: View {
 // MARK: - Shortcuts tab
 
 private struct ShortcutsSettingsView: View {
-    private struct Row: Identifiable {
-        let id = UUID()
-        let action: String
-        let keys: String
-    }
-
-    private struct Group: Identifiable {
-        let id = UUID()
-        let title: String
-        let rows: [Row]
-    }
-
-    private let groups: [Group] = [
-        Group(title: "文件", rows: [
-            Row(action: "打开 PDF", keys: "⌘O"),
-            Row(action: "搜索", keys: "⌘F")
-        ]),
-        Group(title: "视图", rows: [
-            Row(action: "Sidebar", keys: "⌘B"),
-            Row(action: "翻译 Inspector", keys: "⌥⌘I"),
-            Row(action: "放大", keys: "⌘+"),
-            Row(action: "缩小", keys: "⌘−"),
-            Row(action: "Fit Width", keys: "⌘0"),
-            Row(action: "实际大小", keys: "⌥⌘1")
-        ]),
-        Group(title: "导航", rows: [
-            Row(action: "下一页", keys: "⌘→"),
-            Row(action: "上一页", keys: "⌘←"),
-            Row(action: "首页", keys: "⌥⌘↑"),
-            Row(action: "末页", keys: "⌥⌘↓"),
-            Row(action: "后退", keys: "⌘["),
-            Row(action: "前进", keys: "⌘]")
-        ]),
-        Group(title: "选区动作", rows: [
-            Row(action: "翻译选区", keys: "⌃⌘T"),
-            Row(action: "高亮选区", keys: "⌃⌘H")
-        ])
-    ]
+    @State private var shortcuts = AppShortcuts.shared
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(groups) { group in
-                    section(group)
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(ShortcutCatalog.sections) { section in
+                    sectionView(section)
                 }
+
                 Divider()
-                Text("如需自定义任意快捷键，可前往「系统设置 → 键盘 → 键盘快捷键 → App 快捷键」按菜单项名称重映射。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
+                    Text("⌘O / ⌘F 等系统通用键未列出，仍按 Apple 约定固定。点录入栏后按下新键可自定义；按 ⌫ 清空。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("恢复默认") {
+                        shortcuts.resetAll()
+                    }
+                    .controlSize(.small)
+                }
             }
             .padding(16)
         }
     }
 
-    private func section(_ group: Group) -> some View {
+    private func sectionView(_ section: ShortcutSection) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(group.title)
+            Text(section.title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
+
             VStack(spacing: 0) {
-                ForEach(group.rows) { row in
+                ForEach(section.entries) { entry in
                     HStack {
-                        Text(row.action)
+                        Text(entry.title)
                             .font(.system(size: 12))
                         Spacer()
-                        Text(row.keys)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        KeyboardShortcuts.Recorder(for: entry.name) { _ in
+                            shortcuts.notifyChange()
+                        }
                     }
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 4)
                     .padding(.horizontal, 10)
-                    if row.id != group.rows.last?.id {
+                    if entry.id != section.entries.last?.id {
                         Divider().opacity(0.4)
                     }
                 }
