@@ -120,6 +120,23 @@ private struct ReadingSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("划词后", selection: $settings.selectionAutoAction) {
+                    ForEach(SelectionAutoAction.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("划词")
+            } footer: {
+                Text("决定每次完成划词后自动执行什么。「自动翻译」会立即向 LLM 发请求，需要先在「翻译」中填好 API Key。「自动高亮」会沉默地把选区落库为高亮。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+
+            Section {
                 Toggle("高亮时自动翻译并绑定", isOn: $settings.autoTranslateOnHighlight)
             } header: {
                 Text("高亮")

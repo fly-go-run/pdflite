@@ -91,6 +91,7 @@ final class DocumentSession {
     private(set) var referencePreview: ReferencePreviewState?
     @ObservationIgnored private var referenceIndex: ReferenceIndex?
     @ObservationIgnored private var referenceIndexPrepareTask: Task<Void, Never>?
+    @ObservationIgnored private var autoSelectionActionTask: Task<Void, Never>?
 
     // MARK: - PDFView ref
     weak var pdfView: ReaderPDFView?
@@ -267,6 +268,8 @@ final class DocumentSession {
         referenceIndexPrepareTask = nil
         referenceIndex = nil
         referencePreview = nil
+        autoSelectionActionTask?.cancel()
+        autoSelectionActionTask = nil
         selection = nil
         search.clear()
         translation.reset()
@@ -619,6 +622,11 @@ final class DocumentSession {
     }
 
     func handleSelectionChanged(_ snapshot: SelectionSnapshot?) {
+        // Any pending auto-action belongs to the previous selection — drop it before we even
+        // touch state so the closure can't fire against a stale snapshot.
+        autoSelectionActionTask?.cancel()
+        autoSelectionActionTask = nil
+
         let streaming = translation.current?.isStreaming == true
         let shouldRestartStreamingTranslation = streaming
             && snapshot != nil
@@ -630,6 +638,46 @@ final class DocumentSession {
         if shouldRestartStreamingTranslation, let snapshot {
             isTranslationInspectorVisible = true
             translation.translate(snapshot: snapshot, documentId: documentId)
+            return
+        }
+
+        scheduleAutoSelectionActionIfNeeded(for: snapshot)
+    }
+
+    /// When the user has set a "划词后" auto-action, debounce it so we only fire once after the
+    /// selection settles (i.e. they stopped dragging). The closure re-checks `selection` to
+    /// ensure the user hasn't moved on before triggering.
+    private func scheduleAutoSelectionActionIfNeeded(for snapshot: SelectionSnapshot?) {
+        guard let snapshot,
+              snapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            return
+        }
+        let action = readerSettings.selectionAutoAction
+        guard action != .none else { return }
+
+        // For .translate: skip if we're already showing this exact translation, otherwise we'd
+        // refire on every settle even when nothing changed.
+        if action == .translate, isSameSelectionAsCurrentTranslation(snapshot) { return }
+
+        let pinnedText = snapshot.rawText
+        let pinnedPage = snapshot.pageIndex
+
+        autoSelectionActionTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            if Task.isCancelled { return }
+            guard let self,
+                  let current = self.selection,
+                  current.rawText == pinnedText,
+                  current.pageIndex == pinnedPage else { return }
+
+            switch action {
+            case .none:
+                break
+            case .translate:
+                self.translateCurrentSelection()
+            case .highlight:
+                self.highlightSelection()
+            }
         }
     }
 
