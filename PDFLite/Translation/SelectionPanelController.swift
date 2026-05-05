@@ -23,14 +23,12 @@ final class SelectionPanelController {
         near screenRect: NSRect,
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool,
-        truncatedToFirstPage: Bool
+        inspectorOpen: Bool
     ) {
         let view = makeView(
             translation: translation,
             figureReference: figureReference,
-            inspectorOpen: inspectorOpen,
-            truncatedToFirstPage: truncatedToFirstPage
+            inspectorOpen: inspectorOpen
         )
         if panel == nil {
             buildPanel(initialView: view)
@@ -42,8 +40,7 @@ final class SelectionPanelController {
         let size = panelSize(
             translation: translation,
             figureReference: figureReference,
-            inspectorOpen: inspectorOpen,
-            truncatedToFirstPage: truncatedToFirstPage
+            inspectorOpen: inspectorOpen
         )
         let origin = clampedOrigin(for: size, near: screenRect)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
@@ -55,15 +52,13 @@ final class SelectionPanelController {
     func update(
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool,
-        truncatedToFirstPage: Bool
+        inspectorOpen: Bool
     ) {
         guard panel?.isVisible == true else { return }
         host?.rootView = makeView(
             translation: translation,
             figureReference: figureReference,
-            inspectorOpen: inspectorOpen,
-            truncatedToFirstPage: truncatedToFirstPage
+            inspectorOpen: inspectorOpen
         )
     }
 
@@ -80,14 +75,12 @@ final class SelectionPanelController {
     private func makeView(
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool,
-        truncatedToFirstPage: Bool
+        inspectorOpen: Bool
     ) -> SelectionFloatingView {
         SelectionFloatingView(
             translation: translation,
             figureReference: figureReference,
             inspectorOpen: inspectorOpen,
-            truncatedToFirstPage: truncatedToFirstPage,
             onTranslate: { [weak self] in self?.onTranslate?() },
             onHighlight: { [weak self] in self?.onHighlight?() },
             onCopy: { [weak self] in self?.onCopy?() },
@@ -125,17 +118,13 @@ final class SelectionPanelController {
     private func panelSize(
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool,
-        truncatedToFirstPage: Bool
+        inspectorOpen: Bool
     ) -> NSSize {
-        // The "跨页·仅首页" hint adds one short line above the buttons.
-        let hintExtra: CGFloat = truncatedToFirstPage ? 16 : 0
-
         // Inspector-open compact mode: icon-only buttons, no preview row. Stay narrow so the
         // panel doesn't shadow the user's reading area.
         if inspectorOpen {
             let width: CGFloat = figureReference != nil ? 240 : 180
-            return NSSize(width: width, height: 44 + hintExtra)
+            return NSSize(width: width, height: 44)
         }
 
         let hasPreview = translation.map { output in
@@ -153,9 +142,9 @@ final class SelectionPanelController {
         }
 
         if translation?.errorMessage != nil {
-            return NSSize(width: width, height: 100 + hintExtra)
+            return NSSize(width: width, height: 100)
         }
-        return NSSize(width: width, height: (hasPreview ? 72 : 44) + hintExtra)
+        return NSSize(width: width, height: hasPreview ? 72 : 44)
     }
 
     /// Place the panel just below the selection rect, then clamp inside the screen the rect

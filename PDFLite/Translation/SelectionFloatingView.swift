@@ -11,7 +11,6 @@ struct SelectionFloatingView: View {
     let translation: TranslationOutput?
     let figureReference: FigureReference?
     let inspectorOpen: Bool
-    let truncatedToFirstPage: Bool
     let onTranslate: () -> Void
     let onHighlight: () -> Void
     let onCopy: () -> Void
@@ -23,16 +22,6 @@ struct SelectionFloatingView: View {
             if !inspectorOpen, let translation, shouldShowPreview(translation) {
                 preview(for: translation)
                 Divider().opacity(0.55)
-            }
-            if truncatedToFirstPage {
-                HStack(spacing: 4) {
-                    Image(systemName: "scissors")
-                        .font(.system(size: 9))
-                    Text("跨页选区，仅处理首页")
-                        .font(.system(size: 10))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.secondary)
             }
             HStack(spacing: 3) {
                 if let figureReference {

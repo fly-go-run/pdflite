@@ -140,7 +140,7 @@ final class ReaderPDFView: PDFView {
     }
 
     private func isPDFLiteAnnotation(_ annotation: PDFAnnotation) -> Bool {
-        AnnotationService.persistedID(from: annotation) != nil
+        AnnotationService.groupId(from: annotation) != nil
     }
 
     private func linkClickContext(at event: NSEvent) -> LinkClickContext? {

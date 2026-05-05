@@ -276,7 +276,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
 
         func makeAnnotationContextMenu(for annotation: PDFAnnotation) -> NSMenu? {
             guard let session,
-                  let id = session.annotationService?.id(for: annotation) else { return nil }
+                  let groupId = session.annotationService?.groupId(for: annotation) else { return nil }
             let menu = NSMenu(title: "Annotation")
             let deleteItem = NSMenuItem(
                 title: "删除高亮",
@@ -284,7 +284,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
                 keyEquivalent: ""
             )
             deleteItem.target = self
-            deleteItem.representedObject = id
+            deleteItem.representedObject = groupId
             menu.addItem(deleteItem)
 
             let copyItem = NSMenuItem(
@@ -293,24 +293,23 @@ struct PDFKitRepresentable: NSViewRepresentable {
                 keyEquivalent: ""
             )
             copyItem.target = self
-            copyItem.representedObject = id
+            copyItem.representedObject = groupId
             menu.addItem(copyItem)
 
             return menu
         }
 
         @objc private func handleDelete(_ sender: NSMenuItem) {
-            guard let id = sender.representedObject as? String, let session else { return }
-            session.deleteAnnotation(id: id)
+            guard let groupId = sender.representedObject as? String, let session else { return }
+            session.deleteAnnotation(groupId: groupId)
         }
 
         @objc private func handleCopyText(_ sender: NSMenuItem) {
-            guard let id = sender.representedObject as? String,
-                  let session,
-                  let documentId = session.documentId else { return }
-            let records = (try? AnnotationRepository.shared.list(forDocumentId: documentId)) ?? []
-            guard let record = records.first(where: { $0.id == id }),
-                  let text = record.selectedText, !text.isEmpty else { return }
+            guard let groupId = sender.representedObject as? String else { return }
+            // Concatenate per-page selected_text rows into the original full source. For single-
+            // page highlights this is just the one row's text.
+            let text = (try? AnnotationRepository.shared.concatenatedSelectedText(groupId: groupId)) ?? ""
+            guard !text.isEmpty else { return }
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.setString(text, forType: .string)

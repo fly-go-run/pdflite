@@ -12,22 +12,16 @@ final class AnnotationService {
     private static let userNamePrefix = "pdflite:"
 
     private weak var document: PDFDocument?
-    /// id ↔ live PDFAnnotation. PDFAnnotation isn't Hashable so we use a dictionary keyed by id.
-    private var liveByID: [String: PDFAnnotation] = [:]
-    /// Reverse lookup so a runtime click on an annotation can find its persisted id.
-    /// Annotations also carry their id in `userName`, so this dict is mostly a fast path.
-    private var idByAnnotation: [ObjectIdentifier: String] = [:]
 
     init(document: PDFDocument) {
         self.document = document
     }
 
-    /// Recreate PDFAnnotations from persisted records and add them to their pages.
-    /// Must run after the PDFView has the document loaded.
+    /// Recreate PDFAnnotations from persisted records and add them to their pages. Records of the
+    /// same logical highlight share `groupId` so a single click on any of them resolves back to
+    /// the group.
     func restore(records: [AnnotationRecord]) {
         guard let document else { return }
-        liveByID.removeAll(keepingCapacity: true)
-        idByAnnotation.removeAll(keepingCapacity: true)
 
         for record in records {
             guard record.pageIndex >= 0, record.pageIndex < document.pageCount,
@@ -37,65 +31,73 @@ final class AnnotationService {
             do { rects = try AnnotationRectCoder.decode(record.boundsJSON) } catch { continue }
 
             for rect in rects {
-                let annotation = makeHighlight(bounds: rect, hex: record.color, id: record.id)
+                let annotation = makeHighlight(bounds: rect, hex: record.color, groupId: record.groupId)
                 page.addAnnotation(annotation)
             }
-            // Track only the *first* runtime annotation per record id; reverse map lets a click
-            // on any of them resolve to the same record.
-            // (We store all of them via per-rect annotations sharing one userName id.)
         }
     }
 
-    /// Create a multi-rect highlight, add it to the page, return the AnnotationRecord ready for
-    /// persistence. Caller is responsible for inserting into the repository.
-    func createHighlight(snapshot: SelectionSnapshot, documentId: Int64) -> AnnotationRecord? {
-        guard let document, let page = document.page(at: snapshot.pageIndex) else { return nil }
-        let id = UUID().uuidString
-
-        for rect in snapshot.lineRects {
-            let annotation = makeHighlight(bounds: rect, hex: Self.defaultHighlightHex, id: id)
-            page.addAnnotation(annotation)
-        }
-
+    /// Create runtime PDFAnnotations and the matching persistence records for `snapshot` — one
+    /// AnnotationRecord per page touched, all sharing a fresh groupId. Caller is responsible for
+    /// inserting all records via the repository.
+    func createHighlight(snapshot: SelectionSnapshot, documentId: Int64) -> [AnnotationRecord] {
+        let groupId = UUID().uuidString
         let now = Date()
-        let boundsJSON = (try? AnnotationRectCoder.encode(snapshot.lineRects)) ?? "[]"
-        return AnnotationRecord(
-            id: id,
-            documentId: documentId,
-            pageIndex: snapshot.pageIndex,
-            annotationType: "highlight",
-            boundsJSON: boundsJSON,
-            color: Self.defaultHighlightHex,
-            selectedText: snapshot.rawText,
-            noteContent: nil,
-            translationId: nil,
-            createdAt: now,
-            updatedAt: now
-        )
+        var records: [AnnotationRecord] = []
+
+        for pageSelection in snapshot.pages {
+            // Add per-line annotations to the page; each carries `userName` keyed by groupId so a
+            // click on any of them resolves to the same logical highlight.
+            for rect in pageSelection.lineRects {
+                let annotation = makeHighlight(
+                    bounds: rect,
+                    hex: Self.defaultHighlightHex,
+                    groupId: groupId
+                )
+                pageSelection.page.addAnnotation(annotation)
+            }
+
+            let boundsJSON = (try? AnnotationRectCoder.encode(pageSelection.lineRects)) ?? "[]"
+            // Record's `selected_text` only carries this page's portion of the original text. The
+            // full source can be reconstructed by concatenating across the group, in document
+            // order — repository helpers do that for the "复制原文" context menu.
+            let pageText = excerpt(forPage: pageSelection, in: snapshot)
+            records.append(AnnotationRecord(
+                id: UUID().uuidString,
+                groupId: groupId,
+                documentId: documentId,
+                pageIndex: pageSelection.pageIndex,
+                annotationType: "highlight",
+                boundsJSON: boundsJSON,
+                color: Self.defaultHighlightHex,
+                selectedText: pageText,
+                noteContent: nil,
+                translationId: nil,
+                createdAt: now,
+                updatedAt: now
+            ))
+        }
+
+        return records
     }
 
-    /// Remove every PDFAnnotation that belongs to `id` from its page.
-    func removeRuntimeAnnotations(id: String) {
+    /// Remove every PDFAnnotation belonging to `groupId` from the document.
+    func removeRuntimeAnnotations(groupId: String) {
         guard let document else { return }
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
-            // Iterate a snapshot — removeAnnotation mutates the array.
-            for annotation in page.annotations where self.id(for: annotation) == id {
+            for annotation in page.annotations where Self.groupId(from: annotation) == groupId {
                 page.removeAnnotation(annotation)
             }
         }
-        liveByID.removeValue(forKey: id)
     }
 
-    /// Return the persisted id for a runtime annotation, if it's one of ours.
-    func id(for annotation: PDFAnnotation) -> String? {
-        if let id = Self.persistedID(from: annotation) {
-            return id
-        }
-        return idByAnnotation[ObjectIdentifier(annotation)]
+    /// Resolve a runtime annotation back to the group it belongs to, when it's one of ours.
+    func groupId(for annotation: PDFAnnotation) -> String? {
+        Self.groupId(from: annotation)
     }
 
-    static func persistedID(from annotation: PDFAnnotation) -> String? {
+    static func groupId(from annotation: PDFAnnotation) -> String? {
         guard let userName = annotation.userName,
               userName.hasPrefix(userNamePrefix) else { return nil }
         let id = String(userName.dropFirst(userNamePrefix.count))
@@ -104,17 +106,45 @@ final class AnnotationService {
 
     // MARK: - Helpers
 
-    private func makeHighlight(bounds: CGRect, hex: String?, id: String) -> PDFAnnotation {
+    private func makeHighlight(bounds: CGRect, hex: String?, groupId: String) -> PDFAnnotation {
         let annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
         annotation.color = Self.color(fromHex: hex) ?? Self.defaultHighlightColor
-        annotation.userName = Self.userName(for: id)
-        liveByID[id] = annotation
-        idByAnnotation[ObjectIdentifier(annotation)] = id
+        annotation.userName = Self.userName(for: groupId)
         return annotation
     }
 
-    private static func userName(for id: String) -> String {
-        "\(userNamePrefix)\(id)"
+    /// Slice the snapshot's rawText down to the portion belonging to `pageSelection`. v0
+    /// approximates by splitting the rawText into paragraph blocks proportional to per-page line
+    /// counts — works well enough for "copy original" context menus without a full per-line text
+    /// map.
+    private func excerpt(forPage pageSelection: PageSelection, in snapshot: SelectionSnapshot) -> String {
+        // For a single-page snapshot just return the whole rawText.
+        if !snapshot.spansMultiplePages { return snapshot.rawText }
+
+        // Cheap approximation: distribute rawText across pages by line-count weight. Over- or
+        // under-sliced edges are tolerable since this only feeds the right-click "复制原文" menu;
+        // translation uses snapshot.rawText directly.
+        let totalLines = snapshot.pages.reduce(0) { $0 + $1.lineRects.count }
+        guard totalLines > 0 else { return snapshot.rawText }
+
+        let chars = Array(snapshot.rawText)
+        let totalChars = chars.count
+
+        var startLines = 0
+        for p in snapshot.pages {
+            if p.pageIndex == pageSelection.pageIndex { break }
+            startLines += p.lineRects.count
+        }
+        let endLines = startLines + pageSelection.lineRects.count
+
+        let startChar = totalChars * startLines / totalLines
+        let endChar = totalChars * endLines / totalLines
+        guard startChar < endChar else { return "" }
+        return String(chars[startChar..<endChar])
+    }
+
+    private static func userName(for groupId: String) -> String {
+        "\(userNamePrefix)\(groupId)"
     }
 
     static func hex(from color: NSColor) -> String {

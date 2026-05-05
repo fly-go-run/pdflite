@@ -1,76 +1,145 @@
 import AppKit
 import PDFKit
 
-/// Snapshot of the user's current selection — page-coordinate rects per visual line, the cleaned
-/// text, and a screen-space rect for placing floating UI on top of it.
-struct SelectionSnapshot {
+/// One page's contribution to a selection: the page itself plus per-line rects (no big rect that
+/// crosses columns).
+struct PageSelection {
     let pageIndex: Int
     let page: PDFPage
-    /// Page-coordinate rects, one per visual line. Avoid one big rect that crosses columns.
     let lineRects: [CGRect]
-    /// Verbatim text from PDFSelection — cleaning happens in TextCleaner (Phase 3).
+}
+
+/// Snapshot of the user's current selection. May span multiple pages — `pages` is ordered by
+/// document order. Convenience accessors (`pageIndex`, `page`, `lineRects`) point at the first
+/// page so panel positioning, single-page persistence and existing callers keep working.
+struct SelectionSnapshot {
+    let pages: [PageSelection]
+    /// Verbatim text from PDFSelection, joined across lines/pages with `\n` between visual lines
+    /// inside a paragraph and `\n\n` between paragraphs (large vertical gaps + page breaks).
+    /// TextCleaner reads this and preserves the paragraph structure for the LLM.
     let rawText: String
-    /// True when the underlying selection spanned multiple PDF pages and we collapsed it to the
-    /// first page (per §5.3). UI surfaces a hint so the user knows only the first page's content
-    /// is being translated/highlighted.
-    let wasTruncatedToFirstPage: Bool
+
+    var pageIndex: Int { pages.first?.pageIndex ?? 0 }
+    var page: PDFPage { pages.first!.page }
+    var lineRects: [CGRect] { pages.first?.lineRects ?? [] }
+    var spansMultiplePages: Bool { pages.count > 1 }
 }
 
 enum SelectionService {
-    /// Build a snapshot from the PDFView's current selection. Returns nil for empty/no-page
-    /// selections. Per §5.3, cross-page selections are truncated to the first page (rects, text)
-    /// rather than dropped — that way the user still sees the action buttons and can translate /
-    /// highlight / copy what's on the first page; the snapshot carries a flag so the UI can hint.
+    /// Build a snapshot from PDFView's current selection. Walks `selectionsByLine()`, sorts into
+    /// document order, groups per page, and assembles a paragraph-aware rawText using the line's
+    /// vertical gap as the paragraph cue.
     @MainActor
     static func snapshot(from pdfView: PDFView) -> SelectionSnapshot? {
         guard let selection = pdfView.currentSelection,
-              let page = selection.pages.first,
-              let document = page.document else {
+              !selection.pages.isEmpty else {
             return nil
         }
 
-        let wasTruncated = selection.pages.count > 1
-        let pageIndex = document.index(for: page)
+        struct LineEntry {
+            let pageIndex: Int
+            let page: PDFPage
+            let rect: CGRect
+            let text: String
+        }
 
-        // selectionsByLine() splits multi-line / multi-column selections into one PDFSelection
-        // per visual line. Each line's bounds(for:) gives a tight rect, so a two-column layout
-        // produces two rects per row instead of one big rect spanning the gutter. Filtering by
-        // `line.pages.first === page` naturally drops lines that belong to other pages.
+        // Build per-line entries. Each line is its own PDFSelection in selectionsByLine, so its
+        // bounds(for:) gives a tight rect that doesn't span across columns.
         let lineSelections = selection.selectionsByLine()
-        var rects: [CGRect] = []
-        var firstPageStrings: [String] = []
+        var entries: [LineEntry] = []
+
         if lineSelections.isEmpty {
-            rects.append(selection.bounds(for: page))
+            // Fallback for selections PDFKit doesn't split (rare). Just use the bounds on each
+            // page touched.
+            for page in selection.pages {
+                guard let document = page.document else { continue }
+                let rect = selection.bounds(for: page)
+                guard rect.width > 0.5, rect.height > 0.5 else { continue }
+                entries.append(LineEntry(
+                    pageIndex: document.index(for: page),
+                    page: page,
+                    rect: rect,
+                    text: (selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                ))
+            }
         } else {
             for line in lineSelections {
-                guard line.pages.first === page else { continue }
-                let r = line.bounds(for: page)
-                guard r.width > 0.5, r.height > 0.5 else { continue }
-                rects.append(r)
-                if let s = line.string, !s.isEmpty {
-                    firstPageStrings.append(s)
-                }
+                guard let page = line.pages.first, let document = page.document else { continue }
+                let rect = line.bounds(for: page)
+                guard rect.width > 0.5, rect.height > 0.5 else { continue }
+                entries.append(LineEntry(
+                    pageIndex: document.index(for: page),
+                    page: page,
+                    rect: rect,
+                    text: (line.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                ))
             }
         }
-        guard !rects.isEmpty else { return nil }
 
-        // Use the per-line strings when the selection crossed pages so we keep first-page text
-        // only. For single-page selections selectionsByLine sometimes splits hyphenated words
-        // unhelpfully, so fall back to the full selection string in that case.
-        let rawText: String
-        if wasTruncated, !firstPageStrings.isEmpty {
-            rawText = firstPageStrings.joined(separator: " ")
-        } else {
-            rawText = selection.string ?? ""
+        guard !entries.isEmpty else { return nil }
+
+        // Document order: page asc; same page, top-first (PDF y axis increases upward, so larger
+        // maxY is higher on the page). PDFKit usually returns lines in this order already, but
+        // sort defensively for cross-page selections.
+        entries.sort { a, b in
+            if a.pageIndex != b.pageIndex { return a.pageIndex < b.pageIndex }
+            return a.rect.maxY > b.rect.maxY
         }
+
+        // Median line height drives the paragraph-break threshold so the heuristic adapts to font
+        // size automatically. 0.6× the line height tends to catch real paragraph gaps without
+        // tripping on regular leading.
+        let heights = entries.map { $0.rect.height }.sorted()
+        let medianHeight = heights[heights.count / 2]
+        let paragraphGapThreshold = max(medianHeight * 0.6, 4)
+
+        // Assemble rawText with paragraph awareness; collect per-page rects as we go.
+        var rawTextLines: [String] = []
+        var pageBuckets: [Int: PageSelection] = [:]
+        var pageOrder: [Int] = []
+        var prev: LineEntry?
+
+        for entry in entries {
+            if let prev {
+                let isParagraphBreak: Bool
+                if entry.pageIndex != prev.pageIndex {
+                    // Page break is always a paragraph break.
+                    isParagraphBreak = true
+                } else {
+                    let gap = prev.rect.minY - entry.rect.maxY
+                    isParagraphBreak = gap > paragraphGapThreshold
+                }
+                rawTextLines.append(isParagraphBreak ? "\n\n" : "\n")
+            }
+            if !entry.text.isEmpty {
+                rawTextLines.append(entry.text)
+            }
+
+            // Track per-page rects.
+            if pageBuckets[entry.pageIndex] == nil {
+                pageBuckets[entry.pageIndex] = PageSelection(
+                    pageIndex: entry.pageIndex,
+                    page: entry.page,
+                    lineRects: [entry.rect]
+                )
+                pageOrder.append(entry.pageIndex)
+            } else if let existing = pageBuckets[entry.pageIndex] {
+                pageBuckets[entry.pageIndex] = PageSelection(
+                    pageIndex: existing.pageIndex,
+                    page: existing.page,
+                    lineRects: existing.lineRects + [entry.rect]
+                )
+            }
+
+            prev = entry
+        }
+
+        let rawText = rawTextLines.joined().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else { return nil }
 
-        return SelectionSnapshot(
-            pageIndex: pageIndex,
-            page: page,
-            lineRects: rects,
-            rawText: rawText,
-            wasTruncatedToFirstPage: wasTruncated
-        )
+        let pages = pageOrder.compactMap { pageBuckets[$0] }
+        guard !pages.isEmpty else { return nil }
+
+        return SelectionSnapshot(pages: pages, rawText: rawText)
     }
 }

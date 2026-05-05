@@ -138,6 +138,19 @@ final class Database {
             }
         }
 
+        m.registerMigration("v5_annotation_group_id") { db in
+            // Multi-page highlights store one row per page sharing a group_id, so deleting /
+            // listing / context-menu actions can operate on the whole highlight without joining.
+            // Existing single-page rows back-fill group_id = id so they remain self-grouped.
+            try db.alter(table: "annotations") { t in
+                t.add(column: "group_id", .text).notNull().defaults(to: "")
+            }
+            try db.execute(sql: "UPDATE annotations SET group_id = id WHERE group_id = ''")
+            try db.create(index: "idx_annotations_group_id",
+                          on: "annotations",
+                          columns: ["group_id"])
+        }
+
         return m
     }
 }

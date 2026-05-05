@@ -424,15 +424,16 @@ final class DocumentSession {
     func highlightSelection() {
         guard let snapshot = selection,
               let documentId,
-              let service = annotationService,
-              let record = service.createHighlight(snapshot: snapshot, documentId: documentId)
-        else { return }
+              let service = annotationService else { return }
+
+        let records = service.createHighlight(snapshot: snapshot, documentId: documentId)
+        guard let groupId = records.first?.groupId, !records.isEmpty else { return }
 
         do {
-            try AnnotationRepository.shared.insert(record)
+            try AnnotationRepository.shared.insertAll(records)
         } catch {
             // Roll back the runtime annotations so DB and UI stay consistent (§5.4).
-            service.removeRuntimeAnnotations(id: record.id)
+            service.removeRuntimeAnnotations(groupId: groupId)
             logger.error("Failed to persist annotation: \(error.localizedDescription, privacy: .public)")
             loadError = "无法保存高亮：\(error.localizedDescription)"
             return
@@ -440,12 +441,11 @@ final class DocumentSession {
 
         if readerSettings.autoTranslateOnHighlight {
             isTranslationInspectorVisible = true
-            let annotationId = record.id
             translation.translate(snapshot: snapshot, documentId: documentId) { [weak self] saved in
                 guard let self, let translationId = saved.id else { return }
                 do {
                     try AnnotationRepository.shared.updateTranslationId(
-                        annotationId: annotationId,
+                        groupId: groupId,
                         translationId: translationId
                     )
                 } catch {
@@ -576,10 +576,10 @@ final class DocumentSession {
         return window.convertToScreen(inWindow)
     }
 
-    func deleteAnnotation(id: String) {
+    func deleteAnnotation(groupId: String) {
         do {
-            try AnnotationRepository.shared.delete(id: id)
-            annotationService?.removeRuntimeAnnotations(id: id)
+            try AnnotationRepository.shared.delete(groupId: groupId)
+            annotationService?.removeRuntimeAnnotations(groupId: groupId)
         } catch {
             logger.error("Failed to delete annotation: \(error.localizedDescription, privacy: .public)")
             loadError = "无法删除高亮：\(error.localizedDescription)"

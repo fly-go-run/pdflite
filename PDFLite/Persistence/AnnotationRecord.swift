@@ -4,7 +4,8 @@ import GRDB
 struct AnnotationRecord: Codable, FetchableRecord, PersistableRecord, Equatable {
     static let databaseTableName = "annotations"
 
-    var id: String                  // UUID string
+    var id: String                  // UUID string, unique per row
+    var groupId: String             // shared by all rows of one logical (possibly multi-page) highlight
     var documentId: Int64
     var pageIndex: Int
     var annotationType: String      // "highlight" for now
@@ -18,6 +19,7 @@ struct AnnotationRecord: Codable, FetchableRecord, PersistableRecord, Equatable 
 
     enum CodingKeys: String, CodingKey {
         case id
+        case groupId = "group_id"
         case documentId = "document_id"
         case pageIndex = "page_index"
         case annotationType = "annotation_type"
