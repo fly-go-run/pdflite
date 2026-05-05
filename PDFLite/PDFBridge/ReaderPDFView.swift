@@ -36,6 +36,10 @@ final class ReaderPDFView: PDFView {
     /// history, or fall through unchanged.
     var linkClickHandler: ((LinkClickContext) -> LinkClickDecision)?
 
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         unregisterDraggedTypes()

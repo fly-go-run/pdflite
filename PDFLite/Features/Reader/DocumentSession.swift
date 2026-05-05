@@ -297,6 +297,24 @@ final class DocumentSession {
         return payload
     }
 
+    func restoreReaderKeyboardFocusIfAppropriate() {
+        guard let pdfView,
+              let window = pdfView.window,
+              window.isKeyWindow else { return }
+
+        if let responder = window.firstResponder {
+            if responder is NSTextView {
+                return
+            }
+            if let responderView = responder as? NSView,
+               responderView.isDescendant(of: pdfView) {
+                return
+            }
+        }
+
+        window.makeFirstResponder(pdfView)
+    }
+
     // MARK: - Navigation
     //
     // Public goTo* are user-perceived jumps and push the current location onto the back stack.

@@ -15,6 +15,7 @@ struct ReaderWindowView: View {
             }
         }
         .focusedSceneValue(\.documentSession, session)
+        .background(WindowFocusBridge(session: session))
         .onAppear {
             DocumentOpener.register(session)
             wirePanelActions()
@@ -103,5 +104,95 @@ struct ReaderWindowView: View {
             return
         }
         refPanel.present(near: preview.anchor, entry: preview.entry)
+    }
+}
+
+private struct WindowFocusBridge: NSViewRepresentable {
+    let session: DocumentSession
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(session: session)
+    }
+
+    func makeNSView(context: Context) -> FocusProbeView {
+        let view = FocusProbeView()
+        view.onWindowChanged = { [weak coordinator = context.coordinator] window in
+            coordinator?.attach(to: window)
+        }
+        return view
+    }
+
+    func updateNSView(_ view: FocusProbeView, context: Context) {
+        context.coordinator.session = session
+        context.coordinator.attach(to: view.window)
+    }
+
+    static func dismantleNSView(_ view: FocusProbeView, coordinator: Coordinator) {
+        coordinator.detach()
+        view.onWindowChanged = nil
+    }
+
+    final class FocusProbeView: NSView {
+        var onWindowChanged: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindowChanged?(window)
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        weak var session: DocumentSession?
+        private weak var window: NSWindow?
+        private var tokens: [NSObjectProtocol] = []
+
+        init(session: DocumentSession) {
+            self.session = session
+        }
+
+        func attach(to newWindow: NSWindow?) {
+            guard window !== newWindow else { return }
+            detach()
+            window = newWindow
+            guard let newWindow else { return }
+
+            // didBecomeKey is enough — didBecomeMain almost always rides along, and app-level
+            // didBecomeActive is already handled by AppDelegate.
+            let center = NotificationCenter.default
+            tokens.append(center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: newWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.activateSession(restoreKeyboardFocus: true)
+                }
+            })
+
+            if newWindow.isKeyWindow {
+                activateSession(restoreKeyboardFocus: false)
+            }
+        }
+
+        func detach() {
+            let center = NotificationCenter.default
+            for token in tokens {
+                center.removeObserver(token)
+            }
+            tokens = []
+            window = nil
+        }
+
+        private func activateSession(restoreKeyboardFocus: Bool) {
+            guard let session,
+                  let window,
+                  window.isVisible,
+                  !(window is NSPanel) else { return }
+            AppFocusState.shared.activate(session)
+            if restoreKeyboardFocus {
+                session.restoreReaderKeyboardFocusIfAppropriate()
+            }
+        }
     }
 }

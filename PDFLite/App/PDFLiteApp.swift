@@ -5,6 +5,7 @@ struct PDFLiteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var recentFiles = RecentFilesService.shared
     @State private var shortcuts = AppShortcuts.shared
+    @State private var appFocus = AppFocusState.shared
 
     @FocusedValue(\.documentSession) private var focusedSession
 
@@ -14,6 +15,7 @@ struct PDFLiteApp: App {
         // Without this read, observation only registers inside AppCommands.body — which doesn't
         // trigger Scene rebuilds — and menu items keep their old key bindings until app restart.
         let _ = shortcuts.revision
+        let commandSession = focusedSession ?? appFocus.activeSession
 
         WindowGroup("PDFLite") {
             ReaderWindowView()
@@ -22,7 +24,7 @@ struct PDFLiteApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             AppCommands(
-                focusedSession: focusedSession,
+                focusedSession: commandSession,
                 recentFiles: recentFiles,
                 shortcuts: shortcuts
             )
