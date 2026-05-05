@@ -9,7 +9,7 @@ struct ReaderView: View {
             if session.isSidebarVisible {
                 SidebarView(session: session)
                     .frame(width: 240)
-                    .background(.regularMaterial)
+                    .background(VisualEffectBackground(material: .sidebar))
                 Divider()
             }
 
@@ -26,7 +26,7 @@ struct ReaderView: View {
                 Divider()
                 TranslationInspector(session: session)
                     .frame(width: 320)
-                    .background(.regularMaterial)
+                    .background(VisualEffectBackground(material: .contentBackground))
             }
         }
         .toolbar {
