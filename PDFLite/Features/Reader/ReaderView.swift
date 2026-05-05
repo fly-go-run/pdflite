@@ -9,7 +9,11 @@ struct ReaderView: View {
             if session.isSidebarVisible {
                 SidebarView(session: session)
                     .frame(width: 240)
+                    // VisualEffect right behind content for vibrancy; solid color as the deepest
+                    // layer so the brief render gap during fullscreen ↔ windowed animation
+                    // shows the sidebar tint instead of the bare window grey.
                     .background(VisualEffectBackground(material: .sidebar))
+                    .background(Color(nsColor: .controlBackgroundColor))
                 Divider()
             }
 
@@ -27,6 +31,7 @@ struct ReaderView: View {
                 TranslationInspector(session: session)
                     .frame(width: 320)
                     .background(VisualEffectBackground(material: .contentBackground))
+                    .background(Color(nsColor: .controlBackgroundColor))
             }
         }
         .toolbar {
