@@ -104,7 +104,9 @@ struct PDFKitRepresentable: NSViewRepresentable {
         weak var view: ReaderPDFView?
         var lastAppliedSearchRevision: Int = -1
         private weak var observedClipView: NSClipView?
+        private weak var observedScrollView: NSScrollView?
         private var lastScrollOrigin: CGPoint?
+        private var lastScrollDirection: PDFPageWarmupDirection = .both
 
         init(session: DocumentSession) {
             self.session = session
@@ -116,30 +118,65 @@ struct PDFKitRepresentable: NSViewRepresentable {
         }
 
         func detachScrollObserver() {
+            let center = NotificationCenter.default
             if let observedClipView {
-                NotificationCenter.default.removeObserver(
+                center.removeObserver(
                     self,
                     name: NSView.boundsDidChangeNotification,
                     object: observedClipView
                 )
             }
+            if let observedScrollView {
+                center.removeObserver(
+                    self,
+                    name: NSScrollView.willStartLiveScrollNotification,
+                    object: observedScrollView
+                )
+                center.removeObserver(
+                    self,
+                    name: NSScrollView.didEndLiveScrollNotification,
+                    object: observedScrollView
+                )
+            }
             observedClipView = nil
+            observedScrollView = nil
             lastScrollOrigin = nil
+            lastScrollDirection = .both
         }
 
         private func attachScrollObserver(to view: ReaderPDFView) {
-            guard let clipView = view.scrollViewForObservation?.contentView,
-                  observedClipView !== clipView else { return }
+            guard let scrollView = view.scrollViewForObservation else { return }
+            let clipView = scrollView.contentView
+            guard observedClipView !== clipView else { return }
 
             detachScrollObserver()
             observedClipView = clipView
+            observedScrollView = scrollView
             lastScrollOrigin = clipView.bounds.origin
             clipView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(
+
+            let center = NotificationCenter.default
+            center.addObserver(
                 self,
                 selector: #selector(scrollBoundsChanged(_:)),
                 name: NSView.boundsDidChangeNotification,
                 object: clipView
+            )
+            // LiveScroll lifecycle: WillStart fires when finger first touches the trackpad,
+            // DidEnd fires the moment the finger lifts (right before momentum kicks in).
+            // DidEnd is the prime moment to prefetch — momentum still has 1-2s to fly,
+            // and we want the rasters ready before pages reach the viewport.
+            center.addObserver(
+                self,
+                selector: #selector(willStartLiveScroll(_:)),
+                name: NSScrollView.willStartLiveScrollNotification,
+                object: scrollView
+            )
+            center.addObserver(
+                self,
+                selector: #selector(didEndLiveScroll(_:)),
+                name: NSScrollView.didEndLiveScrollNotification,
+                object: scrollView
             )
         }
 
@@ -166,10 +203,28 @@ struct PDFKitRepresentable: NSViewRepresentable {
             defer { lastScrollOrigin = origin }
 
             guard let previous = lastScrollOrigin else { return }
-            let moved = abs(origin.x - previous.x) + abs(origin.y - previous.y)
+            let dy = origin.y - previous.y
+            let dx = origin.x - previous.x
+            let moved = abs(dx) + abs(dy)
             guard moved > 0.5 else { return }
 
+            // Track direction continuously so DidEndLiveScroll can prefetch the right side.
+            if abs(dy) >= abs(dx) {
+                lastScrollDirection = dy >= 0 ? .forward : .backward
+            }
+
             session?.handleScrollActivity()
+        }
+
+        @objc private func willStartLiveScroll(_ notification: Notification) {
+            // Finger just touched the trackpad. Direction unknown — warmup both sides at low priority.
+            session?.requestPageWarmup(direction: .both, delayMilliseconds: 60)
+        }
+
+        @objc private func didEndLiveScroll(_ notification: Notification) {
+            // Finger lifted; momentum begins. Prefetch aggressively in the known direction so the
+            // pages momentum is about to reveal are already cached before they enter the viewport.
+            session?.requestPageWarmup(direction: lastScrollDirection, delayMilliseconds: 0)
         }
 
         func makeAnnotationContextMenu(for annotation: PDFAnnotation) -> NSMenu? {

@@ -79,7 +79,7 @@ final class DocumentSession {
     private var saveTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
     private let saveDebounce: Duration = .milliseconds(500)
-    private let pageWarmup = PDFPageWarmupService.shared
+    private let pageWarmup = PDFPageWarmupService()
     @ObservationIgnored private var scrollIdleTask: Task<Void, Never>?
     @ObservationIgnored private var isScrollActive = false
     @ObservationIgnored private var lastWarmupDirection: PDFPageWarmupDirection = .both
@@ -200,6 +200,11 @@ final class DocumentSession {
         pendingScrollToPage = currentPageIndex
         pendingScale = record?.lastZoom.map { CGFloat($0) }
         needsBridgeRestore = true
+
+        // Hand the live PDFDocument to the warmup service. Sharing the same instance lets
+        // page.thumbnail() prime the very same per-document caches PDFView reads from when it
+        // rasterizes pages on screen — that's what makes neighbouring pages feel instant.
+        pageWarmup.attach(document: doc)
 
         RecentFilesService.shared.add(url)
         schedulePageWarmup(direction: .forward, delayMilliseconds: 500)
@@ -400,10 +405,11 @@ final class DocumentSession {
 
     func handleScrollActivity() {
         guard document != nil else { return }
-        if !isScrollActive {
-            isScrollActive = true
-        }
-        pageWarmup.cancelPending()
+        isScrollActive = true
+        // We do NOT cancel pending warmup here. Boundschange fires continuously during inertial
+        // momentum; cancelling would also kill the warmup DidEndLiveScroll just scheduled, which
+        // is the one we most want to run. Warmup is on a background QoS queue and won't fight
+        // PDFView's main-thread rendering.
         scrollIdleTask?.cancel()
         scrollIdleTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(220))
@@ -479,21 +485,47 @@ final class DocumentSession {
         schedulePageWarmup(direction: lastWarmupDirection, delayMilliseconds: 100)
     }
 
+    /// Public warmup entry point used by the bridge layer (LiveScroll notifications).
+    func requestPageWarmup(direction: PDFPageWarmupDirection, delayMilliseconds: Int) {
+        lastWarmupDirection = direction
+        schedulePageWarmup(direction: direction, delayMilliseconds: delayMilliseconds)
+    }
+
     private func schedulePageWarmup(direction: PDFPageWarmupDirection,
                                     delayMilliseconds: Int) {
-        guard let fileURL, pageCount > 0 else { return }
-        guard isScrollActive == false else {
-            pageWarmup.cancelPending()
-            return
-        }
+        guard pageCount > 0, document != nil else { return }
+        let size = warmupThumbnailSize()
+        guard size.width > 0, size.height > 0 else { return }
         pageWarmup.schedule(
-            url: fileURL,
             currentPageIndex: currentPageIndex,
             pageCount: pageCount,
             displayMode: displayMode,
-            scaleFactor: scaleFactor,
+            thumbnailSize: size,
             direction: direction,
             delayMilliseconds: delayMilliseconds
         )
+    }
+
+    /// Size to ask PDFKit for when pre-rasterizing neighbouring pages. We aim for the actual
+    /// pixel footprint the page would occupy if it were on screen right now (visible width ×
+    /// scaleFactor × backingScale), so the bitmap PDFKit caches matches the size it'll need to
+    /// blit when the user scrolls there. Falls back to conservative defaults until layout settles.
+    private func warmupThumbnailSize() -> CGSize {
+        let backingScale = pdfView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let viewWidth = pdfView?.bounds.width ?? 800
+        let effectiveScale = max(scaleFactor, 0.5)
+        let width = max(viewWidth * effectiveScale * backingScale, 600)
+
+        // Use the current page's aspect ratio when available so the size we pass roughly matches
+        // the page PDFView is about to draw. PDFKit clamps to the page's own aspect anyway, but
+        // a closer hint avoids wasted work on portrait/landscape mismatches.
+        let aspect: CGFloat
+        if let document, let page = document.page(at: currentPageIndex) {
+            let bounds = page.bounds(for: .cropBox)
+            aspect = bounds.width > 0 ? bounds.height / bounds.width : 1.4
+        } else {
+            aspect = 1.4
+        }
+        return CGSize(width: width, height: width * aspect)
     }
 }
