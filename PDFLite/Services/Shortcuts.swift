@@ -14,8 +14,9 @@ extension KeyboardShortcuts.Name {
     static let toggleInspector     = Self("toggleInspector", default: .init(.i, modifiers: [.command, .option]))
     static let zoomIn              = Self("zoomIn", default: .init(.equal, modifiers: .command))
     static let zoomOut             = Self("zoomOut", default: .init(.minus, modifiers: .command))
-    static let fitWidth            = Self("fitWidth", default: .init(.zero, modifiers: .command))
-    static let actualSize          = Self("actualSize", default: .init(.one, modifiers: [.command, .option]))
+    // ⌘0 = actual size mirrors Preview.app; fit-width sits next to it on ⌘9.
+    static let fitWidth            = Self("fitWidth", default: .init(.nine, modifiers: .command))
+    static let actualSize          = Self("actualSize", default: .init(.zero, modifiers: .command))
     static let nextPage            = Self("nextPage", default: .init(.rightArrow, modifiers: .command))
     static let previousPage        = Self("previousPage", default: .init(.leftArrow, modifiers: .command))
     static let firstPage           = Self("firstPage", default: .init(.upArrow, modifiers: [.command, .option]))
@@ -103,6 +104,14 @@ final class AppShortcuts {
     func resetAll() {
         KeyboardShortcuts.reset(ShortcutCatalog.allEntries.map(\.name))
         notifyChange()
+    }
+
+    /// Tooltip text with the *current* key binding appended (e.g. "后退 (⌘[)"), so tooltips
+    /// stay truthful after the user re-records a shortcut in Settings.
+    func helpText(_ base: String, for name: KeyboardShortcuts.Name) -> String {
+        _ = revision
+        guard let shortcut = KeyboardShortcuts.getShortcut(for: name) else { return base }
+        return "\(base) (\(shortcut.description))"
     }
 }
 

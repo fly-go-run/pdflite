@@ -15,6 +15,7 @@ struct SelectionFloatingView: View {
     let onHighlight: () -> Void
     let onCopy: () -> Void
     let onCancel: () -> Void
+    let onRetry: () -> Void
     let onJumpToFigure: () -> Void
 
     var body: some View {
@@ -45,6 +46,11 @@ struct SelectionFloatingView: View {
                     Divider().frame(height: 14)
                     actionButton(systemName: "stop.circle", title: "取消",
                                  helpText: "取消翻译", action: onCancel)
+                }
+                if translation?.errorMessage != nil {
+                    Divider().frame(height: 14)
+                    actionButton(systemName: "arrow.clockwise", title: "重试",
+                                 helpText: "重试翻译", action: onRetry)
                 }
             }
         }

@@ -43,6 +43,9 @@ struct PDFKitRepresentable: NSViewRepresentable {
         view.linkClickHandler = { [weak coordinator = context.coordinator] linkContext in
             coordinator?.handleLinkClick(linkContext) ?? .passThrough
         }
+        view.plainMouseDownHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.session?.dismissReferencePreview()
+        }
 
         session.pdfView = view
         context.coordinator.attach(view: view)
@@ -61,10 +64,9 @@ struct PDFKitRepresentable: NSViewRepresentable {
             view.displayMode = session.displayMode
         }
 
-        // First-time-after-open hand-off: restore annotations + jump to last page + scale.
+        // First-time-after-open hand-off: jump to last page + scale. (Annotations restore
+        // separately once the file hash has confirmed document identity.)
         if let payload = session.consumeBridgeRestore() {
-            session.annotationService?.restore(records: payload.annotations)
-
             if let scale = payload.scale, scale > 0 {
                 view.autoScales = false
                 view.scaleFactor = scale
@@ -308,11 +310,13 @@ struct PDFKitRepresentable: NSViewRepresentable {
             guard let groupId = sender.representedObject as? String else { return }
             // Concatenate per-page selected_text rows into the original full source. For single-
             // page highlights this is just the one row's text.
-            let text = (try? AnnotationRepository.shared.concatenatedSelectedText(groupId: groupId)) ?? ""
-            guard !text.isEmpty else { return }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(text, forType: .string)
+            Task { @MainActor in
+                let text = (try? await AnnotationRepository.shared.concatenatedSelectedText(groupId: groupId)) ?? ""
+                guard !text.isEmpty else { return }
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+            }
         }
     }
 }

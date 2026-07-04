@@ -44,6 +44,9 @@ final class ReaderPDFView: PDFView {
     /// Caller decides whether to preview (we swallow the click), let PDFKit jump and record
     /// history, or fall through unchanged.
     var linkClickHandler: ((LinkClickContext) -> LinkClickDecision)?
+    /// Called on any mouseDown that is NOT opening a reference preview. Used to dismiss
+    /// transient panels (e.g. an open reference preview) on plain clicks in the document.
+    var plainMouseDownHandler: (() -> Void)?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -73,13 +76,43 @@ final class ReaderPDFView: PDFView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // Command + scroll → zoom around the cursor. Otherwise hand back to PDFKit so
-        // touchpad pinch and trackpad/wheel scrolling keep working.
-        guard event.modifierFlags.contains(.command) else {
+        // Command + scroll → zoom around the cursor.
+        if event.modifierFlags.contains(.command) {
+            applyCommandScrollZoom(event)
+            return
+        }
+
+        // Optional trackpad scroll-speed boost. At 1.0× (default) we stay on PDFKit's native
+        // path so momentum and feel are untouched. Only when the user dials sensitivity up do we
+        // drive the clip view ourselves with distance-scaled deltas — the system keeps streaming
+        // the inertial (momentum-phase) events here, we just multiply how far each one travels.
+        // A classic notched wheel (no precise deltas) always stays native so line/page snapping
+        // keeps working.
+        let multiplier = CGFloat(ReaderSettings.shared.scrollSpeed)
+        guard multiplier > 1.0,
+              event.hasPreciseScrollingDeltas,
+              let scrollView = documentScrollView else {
             super.scrollWheel(with: event)
             return
         }
-        applyCommandScrollZoom(event)
+        amplifyScroll(event, in: scrollView, multiplier: multiplier)
+    }
+
+    /// Scroll the internal clip view directly with distance-scaled trackpad deltas. Reading
+    /// `clip.isFlipped` keeps the direction correct regardless of PDFKit's layout, and
+    /// `constrainBoundsRect` clamps at the document edges so we never overscroll.
+    private func amplifyScroll(_ event: NSEvent, in scrollView: NSScrollView, multiplier: CGFloat) {
+        let clip = scrollView.contentView
+        let ySign: CGFloat = clip.isFlipped ? -1 : 1
+        var origin = clip.bounds.origin
+        origin.x -= event.scrollingDeltaX * multiplier
+        origin.y += ySign * event.scrollingDeltaY * multiplier
+
+        let constrained = clip.constrainBoundsRect(
+            NSRect(origin: origin, size: clip.bounds.size)
+        ).origin
+        clip.scroll(to: constrained)
+        scrollView.reflectScrolledClipView(clip)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -109,10 +142,12 @@ final class ReaderPDFView: PDFView {
                 // Swallow the click so PDFKit doesn't jump. The caller is showing a preview.
                 return
             case .jumpAndRecord, .passThrough:
+                plainMouseDownHandler?()
                 super.mouseDown(with: event)
                 return
             }
         }
+        plainMouseDownHandler?()
         super.mouseDown(with: event)
     }
 

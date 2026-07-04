@@ -1,51 +1,97 @@
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
+/// Detail-column content for a loaded document. Lives inside the persistent
+/// `NavigationSplitView` owned by `ReaderWindowView`, so the window's toolbar /
+/// sidebar configuration doesn't churn when toggling between empty and loaded states.
 struct ReaderView: View {
     @Bindable var session: DocumentSession
+    @State private var isDropTargeted = false
 
     var body: some View {
-        NavigationSplitView(columnVisibility: sidebarVisibility) {
-            SidebarView(session: session)
-                .navigationSplitViewColumnWidth(240)
-        } detail: {
-            HStack(spacing: 0) {
-                ZStack(alignment: .top) {
-                    PDFKitRepresentable(session: session)
+        HStack(spacing: 0) {
+            ZStack(alignment: .top) {
+                PDFKitRepresentable(session: session)
+                    .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDrop(providers: providers)
+                    }
+                    .overlay {
+                        if isDropTargeted {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(
+                                    Color.accentColor,
+                                    style: StrokeStyle(lineWidth: 2, dash: [6])
+                                )
+                                .padding(12)
+                                .allowsHitTesting(false)
+                        }
+                    }
 
+                VStack(spacing: 8) {
                     if session.isSearchVisible {
                         SearchBar(session: session)
-                            .padding(.top, 12)
+                    }
+                    if session.isLikelyScanned && !session.scannedHintDismissed {
+                        scannedHintBanner
                     }
                 }
-                .overlay(alignment: .bottom) {
-                    PDFFloatingBar(session: session)
-                        .padding(.bottom, 16)
-                }
-
-                if session.isTranslationInspectorVisible {
-                    Divider()
-                    ZStack {
-                        Color(nsColor: .controlBackgroundColor)
-                            .ignoresSafeArea()
-                        VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
-                            .ignoresSafeArea()
-                        TranslationInspector(session: session)
-                    }
-                    .frame(width: 320)
-                }
+                .padding(.top, 12)
             }
-        }
-        .toolbar {
-            ReaderToolbar(session: session)
+            .overlay(alignment: .bottom) {
+                PDFFloatingBar(session: session)
+                    .padding(.bottom, 16)
+            }
+
+            if session.isTranslationInspectorVisible {
+                Divider()
+                TranslationInspector(session: session)
+                    .frame(width: 320)
+                    .background {
+                        NSColorBackground(color: .windowBackgroundColor)
+                            .ignoresSafeArea(edges: .bottom)
+                    }
+            }
         }
     }
 
-    private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: { session.isSidebarVisible ? .all : .detailOnly },
-            set: { session.isSidebarVisible = ($0 != .detailOnly) }
-        )
+    /// Dropping PDFs onto an open document never replaces it — every file routes through
+    /// DocumentOpener (focus if already open, otherwise a new window).
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard !providers.isEmpty else { return false }
+        for provider in providers {
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      url.pathExtension.lowercased() == "pdf"
+                else { return }
+                DispatchQueue.main.async {
+                    DocumentOpener.requestOpen(url: url)
+                }
+            }
+        }
+        return true
+    }
+
+    private var scannedHintBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text("此 PDF 没有文本层（可能是扫描版），无法选词、翻译和搜索")
+                .font(.system(size: 12))
+            Button {
+                session.scannedHintDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.orange.opacity(0.3)))
+        .shadow(radius: 4, y: 2)
     }
 }
 
@@ -66,7 +112,7 @@ struct PDFFloatingBar: View {
             }
             .buttonStyle(.borderless)
             .disabled(!session.canGoPrevious)
-            .help("Previous Page")
+            .help("上一页")
 
             pageInputField
 
@@ -81,7 +127,7 @@ struct PDFFloatingBar: View {
             }
             .buttonStyle(.borderless)
             .disabled(!session.canGoNext)
-            .help("Next Page")
+            .help("下一页")
 
             Divider().frame(height: 14)
 
@@ -91,7 +137,7 @@ struct PDFFloatingBar: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom Out")
+            .help("缩小")
 
             Text(zoomPercent)
                 .foregroundStyle(.secondary)
@@ -104,13 +150,13 @@ struct PDFFloatingBar: View {
                 Image(systemName: "plus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom In")
+            .help("放大")
 
-            Button("Fit") {
+            Button("适宽") {
                 session.fitWidth()
             }
             .buttonStyle(.borderless)
-            .help("Fit Width")
+            .help("适合宽度")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)

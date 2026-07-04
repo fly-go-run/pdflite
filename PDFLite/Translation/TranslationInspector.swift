@@ -11,20 +11,11 @@ struct TranslationInspector: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("翻译")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    session.isTranslationInspectorVisible = false
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("Hide Inspector")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            Text("翻译")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
 
             Divider()
 
@@ -81,6 +72,16 @@ struct TranslationInspector: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
+                    if session.translation.canRetry {
+                        Button {
+                            session.retryTranslation()
+                        } label: {
+                            Label("重试", systemImage: "arrow.clockwise")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 } else if !translation.partial.isEmpty {
                     Text(translation.partial)
                         .font(.system(size: 14))

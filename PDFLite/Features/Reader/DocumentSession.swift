@@ -22,6 +22,42 @@ extension ReferencePreviewState: Equatable {
     }
 }
 
+/// Result of parsing a PDF off the main thread: the document plus its pre-built outline tree.
+/// @unchecked Sendable is sound here: the worker thread that builds it hands over ownership and
+/// never touches the document again — it only ever crosses to the main actor once.
+private struct ParsedDocument: @unchecked Sendable {
+    let document: PDFDocument
+    let outline: OutlineItem?
+    /// No extractable text in the sampled pages — likely a scanned PDF. Selection, translation
+    /// and search won't work; the reader shows a hint instead of failing silently.
+    let isLikelyScanned: Bool
+
+    static func parse(url: URL) -> ParsedDocument? {
+        guard let doc = PDFDocument(url: url) else { return nil }
+        let outline = doc.outlineRoot.flatMap { OutlineItem(outline: $0) }
+        var hasText = false
+        for index in 0..<min(5, doc.pageCount) where !hasText {
+            if let text = doc.page(at: index)?.string,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hasText = true
+            }
+        }
+        return ParsedDocument(
+            document: doc,
+            outline: outline,
+            isLikelyScanned: doc.pageCount > 0 && !hasText
+        )
+    }
+}
+
+/// One outline node in document order, used to resolve "which outline entry does the current
+/// page belong to" without walking the tree on every page change.
+struct FlatOutlineEntry {
+    let id: String
+    let pageIndex: Int
+    let ancestorIDs: [String]
+}
+
 enum SidebarTab: String, CaseIterable, Identifiable {
     case outline
     case thumbnails
@@ -53,6 +89,9 @@ final class DocumentSession {
     private(set) var pageCount: Int = 0
     private(set) var currentPageIndex: Int = 0
     private(set) var loadError: String?
+    /// Sampled pages had no text layer (likely scanned). Drives a dismissible hint banner.
+    private(set) var isLikelyScanned = false
+    var scannedHintDismissed = false
 
     // MARK: - View state
     var displayMode: PDFDisplayMode = .singlePageContinuous {
@@ -64,6 +103,9 @@ final class DocumentSession {
         }
     }
     private(set) var scaleFactor: CGFloat = 1.0
+    /// True while the viewport is actively scrolling (drag or momentum). The floating selection
+    /// panel hides during scroll and re-presents at the selection's new position on idle.
+    private(set) var isViewportScrolling = false
     var isSidebarVisible: Bool = false
     var sidebarTab: SidebarTab = .outline
     var isSearchVisible: Bool = false
@@ -71,6 +113,11 @@ final class DocumentSession {
 
     // MARK: - Outline & search
     private(set) var outlineRoot: OutlineItem?
+    /// Outline entry the current page falls under, plus its ancestor chain. The sidebar
+    /// highlights the entry, auto-expands the ancestors, and scrolls it into view.
+    private(set) var activeOutlineItemID: String?
+    private(set) var activeOutlineAncestorIDs: Set<String> = []
+    @ObservationIgnored private var outlineFlat: [FlatOutlineEntry] = []
     var search = SearchService()
 
     // MARK: - Navigation history (Smart Jump v0)
@@ -95,18 +142,24 @@ final class DocumentSession {
 
     // MARK: - PDFView ref
     weak var pdfView: ReaderPDFView?
+    /// The NSWindow hosting this session's reader view. Set by WindowFocusBridge; used to focus
+    /// the right window when the same file is opened again (works even before a PDF is loaded).
+    @ObservationIgnored weak var hostWindow: NSWindow?
 
     // MARK: - Pending state to apply after the bridge attaches
     /// True when a fresh document was just loaded and the bridge needs to restore reading
-    /// state + annotations on the next updateNSView pass.
+    /// state on the next updateNSView pass. (Annotations restore separately, once the file
+    /// hash has confirmed document identity.)
     private(set) var needsBridgeRestore: Bool = false
-    fileprivate var pendingAnnotationRecords: [AnnotationRecord] = []
     fileprivate var pendingScrollToPage: Int = 0
     fileprivate var pendingScale: CGFloat?
 
     // Debounced reading-state save.
     private var saveTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
+    /// Monotonic counter guarding the async open pipeline: every openDocument/closeDocument bumps
+    /// it, and each await-resume point checks it so a superseded open can't apply stale state.
+    @ObservationIgnored private var openGeneration = 0
     private let saveDebounce: Duration = .milliseconds(500)
     private let pageWarmup = PDFPageWarmupService()
     @ObservationIgnored private var scrollIdleTask: Task<Void, Never>?
@@ -126,17 +179,7 @@ final class DocumentSession {
     // MARK: - Open
 
     func presentOpenPanel() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType.pdf]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in
-                self?.openDocument(url: url)
-            }
-        }
+        DocumentOpener.presentOpenPanel(preferring: self)
     }
 
     func openDocument(url: URL) {
@@ -148,77 +191,75 @@ final class DocumentSession {
         }
 
         openTask?.cancel()
+        openGeneration += 1
+        let generation = openGeneration
+        let standardizedURL = url.standardizedFileURL
+
         openTask = Task { [weak self] in
-            let standardizedURL = url.standardizedFileURL
+            // Parse the document and build the outline tree off the main thread — nothing else
+            // can see this PDFDocument yet, so the worker thread owns it exclusively.
+            let parsed: ParsedDocument? = await Task.detached(priority: .userInitiated) {
+                ParsedDocument.parse(url: standardizedURL)
+            }.value
+
+            guard let self, !Task.isCancelled, self.openGeneration == generation else { return }
+
+            guard let parsed else {
+                self.loadError = "无法打开 PDF：\(standardizedURL.lastPathComponent)"
+                return
+            }
+            if parsed.document.isLocked {
+                self.loadError = "PDFLite 第一版暂不支持加密 PDF"
+                return
+            }
+
+            // Fast path: restore reading state by URL so the document opens at the right page
+            // immediately. The full-file hash (true identity) runs afterwards, off the render path.
+            let provisional = try? await DocumentRepository.shared.find(byURL: standardizedURL)
+            guard !Task.isCancelled, self.openGeneration == generation else { return }
+
+            self.presentDocument(parsed, url: standardizedURL, provisional: provisional)
+
             let hashResult: Result<String, Error> = await Task.detached(priority: .utility) {
                 Result { try FileHash.sha256(of: standardizedURL) }
             }.value
+            guard !Task.isCancelled, self.openGeneration == generation else { return }
 
-            if Task.isCancelled { return }
-
-            await MainActor.run {
-                self?.finishOpenDocument(url: standardizedURL, hashResult: hashResult)
-            }
+            await self.finishPersistence(url: standardizedURL,
+                                         document: parsed.document,
+                                         hashResult: hashResult,
+                                         provisional: provisional,
+                                         generation: generation)
         }
     }
 
-    private func finishOpenDocument(url: URL, hashResult: Result<String, Error>) {
-        guard let doc = PDFDocument(url: url) else {
-            loadError = "无法打开 PDF：\(url.lastPathComponent)"
-            return
-        }
-
-        if doc.isLocked {
-            loadError = "PDFLite 第一版暂不支持加密 PDF"
-            return
-        }
-
-        // Compute hash + upsert + load reading state. SQLite failure should not block reading,
-        // it just disables persistence for this session (per §8 reading > persistence).
-        let hash: String?
-        switch hashResult {
-        case .success(let value):
-            hash = value
-        case .failure(let error):
-            logger.error("Failed to hash \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            hash = nil
-        }
-
-        var record: DocumentRecord?
-        var annotations: [AnnotationRecord] = []
-        if let hash {
-            do {
-                let upserted = try DocumentRepository.shared.upsert(
-                    fileHash: hash,
-                    fileURL: url,
-                    title: url.deletingPathExtension().lastPathComponent,
-                    pageCount: doc.pageCount
-                )
-                record = upserted
-                if let id = upserted.id {
-                    annotations = (try? AnnotationRepository.shared.list(forDocumentId: id)) ?? []
-                }
-            } catch {
-                logger.error("DocumentRepository upsert failed: \(error.localizedDescription, privacy: .public)")
-                loadError = "数据库写入失败，本次阅读状态和高亮不会被保存：\(error.localizedDescription)"
-            }
-        }
-
+    /// First phase of open: put the document on screen with the best reading state we know so
+    /// far (the URL-matched record). Runs before hashing / DB upsert so first render never waits
+    /// on a full-file read.
+    private func presentDocument(_ parsed: ParsedDocument, url: URL, provisional: DocumentRecord?) {
+        let doc = parsed.document
         fileURL = url
         document = doc
-        documentId = record?.id
+        documentId = nil // unknown until the hash confirms identity
+        isLikelyScanned = parsed.isLikelyScanned
+        scannedHintDismissed = false
         pageCount = doc.pageCount
-        currentPageIndex = max(0, min(doc.pageCount - 1, record?.lastPage ?? 0))
-        outlineRoot = doc.outlineRoot.flatMap { OutlineItem(outline: $0) }
+        currentPageIndex = max(0, min(doc.pageCount - 1, provisional?.lastPage ?? 0))
+        outlineRoot = parsed.outline
+        outlineFlat = []
+        if let children = parsed.outline?.children {
+            Self.flattenOutline(children, ancestors: [], into: &outlineFlat)
+        }
+        updateActiveOutlineItem()
         annotationService = AnnotationService(document: doc)
         let newReferenceIndex = ReferenceIndex(document: doc)
         referenceIndex = newReferenceIndex
         referencePreview = nil
         referenceIndexPrepareTask?.cancel()
-        // Build the bibliography index off the click path. Wait a couple of seconds so we don't
-        // pile onto the page warmup queue while the user is still seeing the first page render.
+        // Build the bibliography index off the click path. A short breather lets the first page
+        // render land; prepare() itself yields between pages so it never holds the main actor.
         referenceIndexPrepareTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .milliseconds(250))
             if Task.isCancelled { return }
             guard let self, self.referenceIndex === newReferenceIndex else { return }
             await newReferenceIndex.prepare()
@@ -228,15 +269,13 @@ final class DocumentSession {
         selection = nil
         translation.reset()
 
-        // Reading state from DB
-        if let savedMode = record?.displayMode {
+        if let savedMode = provisional?.displayMode {
             displayMode = PDFDisplayMode.from(dbValue: savedMode)
         }
-        scaleFactor = CGFloat(record?.lastZoom ?? 1.0)
+        scaleFactor = CGFloat(provisional?.lastZoom ?? 1.0)
 
-        pendingAnnotationRecords = annotations
         pendingScrollToPage = currentPageIndex
-        pendingScale = record?.lastZoom.map { CGFloat($0) }
+        pendingScale = provisional?.lastZoom.map { CGFloat($0) }
         needsBridgeRestore = true
 
         // Hand the live PDFDocument to the warmup service. Sharing the same instance lets
@@ -248,9 +287,71 @@ final class DocumentSession {
         schedulePageWarmup(direction: .forward, delayMilliseconds: 500)
     }
 
+    /// Second phase of open: hash confirms document identity, then upsert + annotation restore.
+    /// SQLite failure doesn't block reading, it just disables persistence for this session
+    /// (per §8 reading > persistence).
+    private func finishPersistence(url: URL,
+                                   document doc: PDFDocument,
+                                   hashResult: Result<String, Error>,
+                                   provisional: DocumentRecord?,
+                                   generation: Int) async {
+        let hash: String?
+        switch hashResult {
+        case .success(let value):
+            hash = value
+        case .failure(let error):
+            logger.error("Failed to hash \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            hash = nil
+        }
+        guard let hash else { return }
+
+        let record: DocumentRecord
+        do {
+            record = try await DocumentRepository.shared.upsert(
+                fileHash: hash,
+                fileURL: url,
+                title: url.deletingPathExtension().lastPathComponent,
+                pageCount: doc.pageCount
+            )
+        } catch {
+            logger.error("DocumentRepository upsert failed: \(error.localizedDescription, privacy: .public)")
+            loadError = "数据库写入失败，本次阅读状态和高亮不会被保存：\(error.localizedDescription)"
+            return
+        }
+        guard openGeneration == generation, document === doc else { return }
+
+        documentId = record.id
+
+        // The URL row we restored from can turn out to belong to different content (file replaced
+        // in place), or the hash may match a record under an old path (file moved). Re-apply the
+        // reading state that actually belongs to this content — but only if the user hasn't
+        // navigated away from the provisional position yet.
+        if record.id != provisional?.id {
+            let provisionalIndex = max(0, min(pageCount - 1, provisional?.lastPage ?? 0))
+            let target = max(0, min(pageCount - 1, record.lastPage))
+            if currentPageIndex == provisionalIndex,
+               target != currentPageIndex,
+               let page = doc.page(at: target) {
+                pdfView?.go(to: page)
+            }
+            if let savedMode = record.displayMode {
+                displayMode = PDFDisplayMode.from(dbValue: savedMode)
+            }
+        }
+
+        if let id = record.id {
+            let annotations = (try? await AnnotationRepository.shared.list(forDocumentId: id)) ?? []
+            guard openGeneration == generation, document === doc else { return }
+            if !annotations.isEmpty {
+                annotationService?.restore(records: annotations)
+            }
+        }
+    }
+
     func closeDocument() {
         openTask?.cancel()
         openTask = nil
+        openGeneration += 1
         scrollIdleTask?.cancel()
         scrollIdleTask = nil
         isScrollActive = false
@@ -260,9 +361,14 @@ final class DocumentSession {
         fileURL = nil
         document = nil
         documentId = nil
+        isLikelyScanned = false
+        scannedHintDismissed = false
         pageCount = 0
         currentPageIndex = 0
         outlineRoot = nil
+        outlineFlat = []
+        activeOutlineItemID = nil
+        activeOutlineAncestorIDs = []
         annotationService = nil
         referenceIndexPrepareTask?.cancel()
         referenceIndexPrepareTask = nil
@@ -287,10 +393,9 @@ final class DocumentSession {
 
     // MARK: - Bridge handshake
 
-    func consumeBridgeRestore() -> (page: Int, scale: CGFloat?, annotations: [AnnotationRecord])? {
+    func consumeBridgeRestore() -> (page: Int, scale: CGFloat?)? {
         guard needsBridgeRestore else { return nil }
-        let payload = (page: pendingScrollToPage, scale: pendingScale, annotations: pendingAnnotationRecords)
-        pendingAnnotationRecords = []
+        let payload = (page: pendingScrollToPage, scale: pendingScale)
         pendingScale = nil
         pendingScrollToPage = 0
         needsBridgeRestore = false
@@ -429,6 +534,13 @@ final class DocumentSession {
         pdfView.autoScales = true
     }
 
+    // MARK: - Print
+
+    func printDocument() {
+        guard let pdfView, pdfView.document != nil else { return }
+        pdfView.print(with: .shared, autoRotate: true)
+    }
+
     // MARK: - Search
 
     func toggleSearch(open: Bool? = nil) {
@@ -450,29 +562,33 @@ final class DocumentSession {
         let records = service.createHighlight(snapshot: snapshot, documentId: documentId)
         guard let groupId = records.first?.groupId, !records.isEmpty else { return }
 
-        do {
-            try AnnotationRepository.shared.insertAll(records)
-        } catch {
-            // Roll back the runtime annotations so DB and UI stay consistent (§5.4).
-            service.removeRuntimeAnnotations(groupId: groupId)
-            logger.error("Failed to persist annotation: \(error.localizedDescription, privacy: .public)")
-            loadError = "无法保存高亮：\(error.localizedDescription)"
-            return
+        Task { [weak self] in
+            do {
+                try await AnnotationRepository.shared.insertAll(records)
+            } catch {
+                // Roll back the runtime annotations so DB and UI stay consistent (§5.4).
+                guard let self else { return }
+                self.annotationService?.removeRuntimeAnnotations(groupId: groupId)
+                self.logger.error("Failed to persist annotation: \(error.localizedDescription, privacy: .public)")
+                self.loadError = "无法保存高亮：\(error.localizedDescription)"
+            }
         }
 
         if readerSettings.autoTranslateOnHighlight {
             isTranslationInspectorVisible = true
             translation.translate(snapshot: snapshot, documentId: documentId) { [weak self] saved in
                 guard let self, let translationId = saved.id else { return }
-                do {
-                    try AnnotationRepository.shared.updateTranslationId(
-                        groupId: groupId,
-                        translationId: translationId
-                    )
-                } catch {
-                    self.logger.error(
-                        "Failed to bind translation to highlight: \(error.localizedDescription, privacy: .public)"
-                    )
+                Task {
+                    do {
+                        try await AnnotationRepository.shared.updateTranslationId(
+                            groupId: groupId,
+                            translationId: translationId
+                        )
+                    } catch {
+                        self.logger.error(
+                            "Failed to bind translation to highlight: \(error.localizedDescription, privacy: .public)"
+                        )
+                    }
                 }
             }
         }
@@ -562,11 +678,27 @@ final class DocumentSession {
         translation.cancelInFlight()
     }
 
+    /// Re-run the last translation after an error. Works even if the selection was cleared —
+    /// the service keeps the last requested snapshot.
+    func retryTranslation() {
+        guard translation.canRetry else { return }
+        isTranslationInspectorVisible = true
+        translation.retryLast()
+    }
+
     func copyCurrentSelection() {
         guard let snapshot = selection else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(snapshot.rawText, forType: .string)
+    }
+
+    /// The current translation output, but only when it belongs to the current selection.
+    /// The floating panel binds to this so it never shows a previous selection's stream.
+    var translationMatchingCurrentSelection: TranslationOutput? {
+        guard let snapshot = selection,
+              isSameSelectionAsCurrentTranslation(snapshot) else { return nil }
+        return translation.current
     }
 
     var shouldDismissSelectionPanelForCompletedTranslation: Bool {
@@ -597,13 +729,25 @@ final class DocumentSession {
         return window.convertToScreen(inWindow)
     }
 
+    /// The PDF view's frame in screen coordinates, used to decide whether an anchored panel's
+    /// target is still visible in the viewport.
+    func pdfViewScreenFrame() -> NSRect? {
+        guard let pdfView, let window = pdfView.window else { return nil }
+        let inWindow = pdfView.convert(pdfView.bounds, to: nil)
+        return window.convertToScreen(inWindow)
+    }
+
     func deleteAnnotation(groupId: String) {
-        do {
-            try AnnotationRepository.shared.delete(groupId: groupId)
-            annotationService?.removeRuntimeAnnotations(groupId: groupId)
-        } catch {
-            logger.error("Failed to delete annotation: \(error.localizedDescription, privacy: .public)")
-            loadError = "无法删除高亮：\(error.localizedDescription)"
+        // Remove from the view immediately for responsive feedback; the DB delete follows. If it
+        // fails, surface the error — the highlight will reappear on next open, which matches.
+        annotationService?.removeRuntimeAnnotations(groupId: groupId)
+        Task { [weak self] in
+            do {
+                try await AnnotationRepository.shared.delete(groupId: groupId)
+            } catch {
+                self?.logger.error("Failed to delete annotation: \(error.localizedDescription, privacy: .public)")
+                self?.loadError = "无法删除高亮：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -614,6 +758,12 @@ final class DocumentSession {
         let direction: PDFPageWarmupDirection = index > currentPageIndex ? .forward : .backward
         currentPageIndex = index
         lastWarmupDirection = direction
+        updateActiveOutlineItem()
+        // A reference preview is anchored to a fixed screen point; once the page underneath it
+        // changes it's pointing at nothing — dismiss instead of lingering over new content.
+        if referencePreview != nil {
+            referencePreview = nil
+        }
         scheduleSave()
         schedulePageWarmup(direction: direction, delayMilliseconds: 160)
     }
@@ -627,6 +777,12 @@ final class DocumentSession {
     func handleScrollActivity() {
         guard document != nil else { return }
         isScrollActive = true
+        if !isViewportScrolling {
+            isViewportScrolling = true
+        }
+        if referencePreview != nil {
+            referencePreview = nil
+        }
         // We do NOT cancel pending warmup here. Boundschange fires continuously during inertial
         // momentum; cancelling would also kill the warmup DidEndLiveScroll just scheduled, which
         // is the one we most want to run. Warmup is on a background QoS queue and won't fight
@@ -657,19 +813,13 @@ final class DocumentSession {
             return
         }
 
-        let streaming = translation.current?.isStreaming == true
-        let shouldRestartStreamingTranslation = streaming
-            && snapshot != nil
-            && !isSameSelectionAsCurrentTranslation(snapshot)
-
+        // Note: an in-flight streaming translation for the *previous* selection keeps going —
+        // selecting new text (e.g. to copy it) must not burn tokens on an unrequested
+        // re-translation. The floating panel only shows a translation that matches the current
+        // selection (translationMatchingCurrentSelection), so no stale text is displayed. The
+        // auto-action below respects the user's "划词后" setting.
         selection = snapshot
         selectionRevision += 1
-
-        if shouldRestartStreamingTranslation, let snapshot {
-            isTranslationInspectorVisible = true
-            translation.translate(snapshot: snapshot, documentId: documentId)
-            return
-        }
 
         scheduleAutoSelectionActionIfNeeded(for: snapshot)
     }
@@ -730,7 +880,7 @@ final class DocumentSession {
             if Task.isCancelled { return }
             guard self != nil else { return }
             do {
-                try DocumentRepository.shared.updateReadingState(
+                try await DocumentRepository.shared.updateReadingState(
                     documentId: documentId,
                     lastPage: snapshot.page,
                     lastZoom: snapshot.zoom,
@@ -747,7 +897,9 @@ final class DocumentSession {
         saveTask = nil
         guard let documentId else { return }
         do {
-            try DocumentRepository.shared.updateReadingState(
+            // Synchronous on purpose: flush runs on window close / app quit, where the write must
+            // land before teardown continues.
+            try DocumentRepository.shared.updateReadingStateNow(
                 documentId: documentId,
                 lastPage: currentPageIndex,
                 lastZoom: Double(scaleFactor),
@@ -758,8 +910,38 @@ final class DocumentSession {
         }
     }
 
+    // MARK: - Outline tracking
+
+    private static func flattenOutline(_ items: [OutlineItem],
+                                       ancestors: [String],
+                                       into result: inout [FlatOutlineEntry]) {
+        for item in items {
+            if let pageIndex = item.pageIndex {
+                result.append(FlatOutlineEntry(id: item.id, pageIndex: pageIndex, ancestorIDs: ancestors))
+            }
+            if let children = item.children, !children.isEmpty {
+                flattenOutline(children, ancestors: ancestors + [item.id], into: &result)
+            }
+        }
+    }
+
+    /// The active entry is the last one (in document order) whose page is at or before the
+    /// current page — i.e. the section the reader is currently inside.
+    private func updateActiveOutlineItem() {
+        var best: FlatOutlineEntry?
+        for entry in outlineFlat where entry.pageIndex <= currentPageIndex {
+            best = entry
+        }
+        let newID = best?.id
+        if activeOutlineItemID != newID {
+            activeOutlineItemID = newID
+            activeOutlineAncestorIDs = Set(best?.ancestorIDs ?? [])
+        }
+    }
+
     private func handleScrollIdle() {
         isScrollActive = false
+        isViewportScrolling = false
         schedulePageWarmup(direction: lastWarmupDirection, delayMilliseconds: 100)
     }
 

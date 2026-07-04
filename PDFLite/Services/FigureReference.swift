@@ -9,11 +9,20 @@ struct FigureReference: Equatable {
     let kind: Kind
     let number: Int
 
-    /// Canonical caption label used for full-doc search ("Figure 3" / "Table 2").
+    /// Canonical caption label used for UI ("Figure 3" / "Table 2").
     var canonicalLabel: String {
         switch kind {
         case .figure: return "Figure \(number)"
         case .table: return "Table \(number)"
+        }
+    }
+
+    /// Caption spellings to try when searching the document. Journals are split between the
+    /// full word and the abbreviation ("Fig. 3:", "Fig 3 |"), so the jump has to try both.
+    var searchLabels: [String] {
+        switch kind {
+        case .figure: return ["Figure \(number)", "Fig. \(number)", "Fig \(number)"]
+        case .table: return ["Table \(number)", "Tab. \(number)", "Tab \(number)"]
         }
     }
 
@@ -35,11 +44,12 @@ struct FigureReference: Equatable {
         return FigureReference(kind: kind, number: number)
     }
 
-    // First token is the kind word, then the first 1–3 digit number. Anchored with `^` so a
-    // selection of body text that happens to *contain* "Figure 3" later doesn't match — the user
-    // should be able to select the inline mention directly.
+    // The kind word may carry a short prefix ("see Figure 3", "(Fig. 3)") — up to 24 characters,
+    // so a paragraph-sized selection that merely *contains* "Figure 3" still doesn't sprout a
+    // jump button. Then the first 1–3 digit number.
     // swiftlint:disable:next force_try
     private static let pattern = try! NSRegularExpression(
-        pattern: #"^(?i)(figure|fig\.?|table|tab\.?)\s*(\d{1,3})\b"#
+        pattern: #"(?i)^.{0,24}?\b(figure|fig\.?|table|tab\.?)\s*(\d{1,3})\b"#,
+        options: [.dotMatchesLineSeparators]
     )
 }

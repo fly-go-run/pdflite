@@ -14,6 +14,7 @@ final class SelectionPanelController {
     var onHighlight: (() -> Void)?
     var onCopy: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onRetry: (() -> Void)?
     var onJumpToFigure: (() -> Void)?
 
     /// Show or move the panel so it sits just below `screenRect` (the screen-space bounds of the
@@ -92,6 +93,7 @@ final class SelectionPanelController {
             onHighlight: { [weak self] in self?.onHighlight?() },
             onCopy: { [weak self] in self?.onCopy?() },
             onCancel: { [weak self] in self?.onCancel?() },
+            onRetry: { [weak self] in self?.onRetry?() },
             onJumpToFigure: { [weak self] in self?.onJumpToFigure?() }
         )
     }

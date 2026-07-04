@@ -8,18 +8,27 @@ import SwiftUI
 /// translation inspector was open.
 struct ReaderToolbar: ToolbarContent {
     @Bindable var session: DocumentSession
+    private let shortcuts = AppShortcuts.shared
 
     var body: some ToolbarContent {
-        // Left side: back/forward. Sidebar toggle is provided automatically by
+        // Left side: home + back/forward. Sidebar toggle is provided automatically by
         // NavigationSplitView at the leading edge of the toolbar.
         ToolbarItemGroup(placement: .navigation) {
+            Button {
+                session.closeDocument()
+            } label: {
+                Image(systemName: "house")
+            }
+            .disabled(!session.hasDocument)
+            .help("回到书架")
+
             Button {
                 session.goBack()
             } label: {
                 Image(systemName: "chevron.backward")
             }
             .disabled(!session.navigation.canGoBack)
-            .help("Back (⌘[)")
+            .help(shortcuts.helpText("后退", for: .goBack))
 
             Button {
                 session.goForward()
@@ -27,10 +36,12 @@ struct ReaderToolbar: ToolbarContent {
                 Image(systemName: "chevron.forward")
             }
             .disabled(!session.navigation.canGoForward)
-            .help("Forward (⌘])")
+            .help(shortcuts.helpText("前进", for: .goForward))
         }
 
         // Right side: display mode + highlight + search + translation inspector toggle.
+        // Items stay mounted permanently (disabled instead of removed) so the toolbar layout
+        // never jumps when a selection appears.
         ToolbarItemGroup(placement: .primaryAction) {
             Picker("", selection: $session.displayMode) {
                 Image(systemName: "doc.text").tag(PDFDisplayMode.singlePageContinuous)
@@ -38,24 +49,25 @@ struct ReaderToolbar: ToolbarContent {
             }
             .pickerStyle(.segmented)
             .frame(width: 84)
-            .help("Display Mode")
+            .disabled(!session.hasDocument)
+            .help("显示模式")
 
-            if session.hasSelection {
-                Button {
-                    session.highlightSelection()
-                } label: {
-                    Image(systemName: "highlighter")
-                        .foregroundStyle(.yellow)
-                }
-                .help("Highlight Selection (⌃⌘H)")
+            Button {
+                session.highlightSelection()
+            } label: {
+                Image(systemName: "highlighter")
+                    .foregroundStyle(session.hasSelection ? .yellow : .secondary)
             }
+            .disabled(!session.hasSelection)
+            .help(shortcuts.helpText("高亮选区", for: .highlightSelection))
 
             Button {
                 session.toggleSearch()
             } label: {
                 Image(systemName: "magnifyingglass")
             }
-            .help("Search")
+            .disabled(!session.hasDocument)
+            .help("搜索 (⌘F)")
 
             Button {
                 session.isTranslationInspectorVisible.toggle()
@@ -63,7 +75,8 @@ struct ReaderToolbar: ToolbarContent {
                 Image(systemName: "character.bubble")
                     .foregroundStyle(session.isTranslationInspectorVisible ? Color.accentColor : .primary)
             }
-            .help("Toggle Translation Inspector (⌥⌘I)")
+            .disabled(!session.hasDocument)
+            .help(shortcuts.helpText("翻译面板", for: .toggleInspector))
         }
     }
 }

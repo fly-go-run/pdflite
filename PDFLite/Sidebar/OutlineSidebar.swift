@@ -7,10 +7,23 @@ struct OutlineSidebar: View {
     var body: some View {
         Group {
             if let root = session.outlineRoot, let children = root.children, !children.isEmpty {
-                List {
-                    OutlineItemRows(items: children, session: session, depth: 0)
+                ScrollViewReader { proxy in
+                    List {
+                        OutlineItemRows(items: children, session: session, depth: 0)
+                    }
+                    .listStyle(.sidebar)
+                    .onChange(of: session.activeOutlineItemID) { _, id in
+                        guard let id else { return }
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            proxy.scrollTo(id)
+                        }
+                    }
+                    .onAppear {
+                        if let id = session.activeOutlineItemID {
+                            proxy.scrollTo(id)
+                        }
+                    }
                 }
-                .listStyle(.sidebar)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "list.bullet.indent")
@@ -44,7 +57,8 @@ private struct OutlineItemRows: View {
 }
 
 /// Default-expand only the first level so the outline opens to depth 2 (top-level + their
-/// direct children). Deeper nodes stay collapsed until the user expands them.
+/// direct children). Deeper nodes stay collapsed until the user expands them — or until the
+/// reading position moves inside them, which auto-expands the ancestor chain.
 private struct OutlineDisclosure: View {
     let item: OutlineItem
     let children: [OutlineItem]
@@ -66,6 +80,16 @@ private struct OutlineDisclosure: View {
         } label: {
             OutlineItemLabel(item: item, session: session)
         }
+        .onChange(of: session.activeOutlineAncestorIDs) { _, ids in
+            if ids.contains(item.id) {
+                isExpanded = true
+            }
+        }
+        .onAppear {
+            if session.activeOutlineAncestorIDs.contains(item.id) {
+                isExpanded = true
+            }
+        }
     }
 }
 
@@ -74,6 +98,7 @@ private struct OutlineItemLabel: View {
     let session: DocumentSession
 
     var body: some View {
+        let isActive = session.activeOutlineItemID == item.id
         Button {
             if let dest = item.destination {
                 session.goToDestination(dest)
@@ -85,6 +110,7 @@ private struct OutlineItemLabel: View {
                 Text(item.title)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .fontWeight(isActive ? .semibold : .regular)
                 Spacer()
                 if let pageIndex = item.pageIndex {
                     Text("\(pageIndex + 1)")
@@ -96,5 +122,12 @@ private struct OutlineItemLabel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(
+            isActive ? Color.accentColor.opacity(0.16) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 4)
+        )
+        .id(item.id)
     }
 }

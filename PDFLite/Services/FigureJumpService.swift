@@ -11,20 +11,26 @@ enum FigureJumpService {
         in document: PDFDocument,
         excluding sourcePage: Int?
     ) -> PDFSelection? {
-        let label = reference.canonicalLabel
-
-        // Prefer caption-style hits.
-        for trailing in [":", "."] {
-            let needle = label + trailing
-            let matches = document.findString(needle, withOptions: [.caseInsensitive])
-            if let hit = pickTarget(from: matches, sourcePage: sourcePage, in: document) {
-                return hit
+        // Prefer caption-style hits across every spelling ("Figure 3:", "Fig. 3.", "Fig 3 |")
+        // before falling back to bare labels. The "|" trailing covers Nature-style captions.
+        for label in reference.searchLabels {
+            for trailing in [":", ".", " |"] {
+                let needle = label + trailing
+                let matches = document.findString(needle, withOptions: [.caseInsensitive])
+                if let hit = pickTarget(from: matches, sourcePage: sourcePage, in: document) {
+                    return hit
+                }
             }
         }
 
-        // Fallback to bare label — typically inline mentions, but better than nothing.
-        let bare = document.findString(label, withOptions: [.caseInsensitive])
-        return pickTarget(from: bare, sourcePage: sourcePage, in: document)
+        // Fallback to bare labels — typically inline mentions, but better than nothing.
+        for label in reference.searchLabels {
+            let bare = document.findString(label, withOptions: [.caseInsensitive])
+            if let hit = pickTarget(from: bare, sourcePage: sourcePage, in: document) {
+                return hit
+            }
+        }
+        return nil
     }
 
     private static func pickTarget(
