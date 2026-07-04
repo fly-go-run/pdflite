@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 /// What to do automatically when the user finishes a text selection. Independent of
 /// `autoTranslateOnHighlight`, which only chains *after* a manual highlight.
@@ -18,6 +19,29 @@ enum SelectionAutoAction: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 /// Per-app reading preferences. Light wrapper over UserDefaults so SwiftUI views can bind to it
 /// directly via @Observable. Toggles persist immediately on set.
 @MainActor
@@ -25,9 +49,14 @@ enum SelectionAutoAction: String, CaseIterable, Identifiable {
 final class ReaderSettings {
     static let shared = ReaderSettings()
 
+    /// Allowed trackpad scroll-speed multipliers. 1.0 = native macOS distance per swipe.
+    static let scrollSpeedRange: ClosedRange<Double> = 1.0...3.0
+
     private enum Key {
         static let autoTranslateOnHighlight = "pdflite.autoTranslateOnHighlight"
         static let selectionAutoAction = "pdflite.selectionAutoAction"
+        static let appearanceMode = "pdflite.appearanceMode"
+        static let scrollSpeed = "pdflite.scrollSpeed"
     }
 
     var autoTranslateOnHighlight: Bool {
@@ -44,6 +73,28 @@ final class ReaderSettings {
         }
     }
 
+    var appearanceMode: AppearanceMode {
+        didSet {
+            guard oldValue != appearanceMode else { return }
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: Key.appearanceMode)
+        }
+    }
+
+    /// Distance multiplier applied to trackpad scroll deltas. 1.0 keeps PDFKit's native feel;
+    /// higher values make one swipe travel proportionally further. See `ReaderPDFView.scrollWheel`.
+    var scrollSpeed: Double {
+        didSet {
+            let clamped = min(max(scrollSpeed, Self.scrollSpeedRange.lowerBound),
+                              Self.scrollSpeedRange.upperBound)
+            if clamped != scrollSpeed {
+                scrollSpeed = clamped
+                return
+            }
+            guard oldValue != scrollSpeed else { return }
+            UserDefaults.standard.set(scrollSpeed, forKey: Key.scrollSpeed)
+        }
+    }
+
     init() {
         let defaults = UserDefaults.standard
         // bool(forKey:) returns false when the key is absent — that's our intended default.
@@ -54,5 +105,17 @@ final class ReaderSettings {
         } else {
             selectionAutoAction = .none
         }
+        if let raw = defaults.string(forKey: Key.appearanceMode),
+           let value = AppearanceMode(rawValue: raw) {
+            appearanceMode = value
+        } else {
+            appearanceMode = .system
+        }
+        // double(forKey:) returns 0 when the key is absent — fall back to native 1.0× then.
+        let storedScrollSpeed = defaults.double(forKey: Key.scrollSpeed)
+        scrollSpeed = storedScrollSpeed > 0
+            ? min(max(storedScrollSpeed, Self.scrollSpeedRange.lowerBound),
+                  Self.scrollSpeedRange.upperBound)
+            : 1.0
     }
 }

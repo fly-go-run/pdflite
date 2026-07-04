@@ -124,6 +124,43 @@ private struct ReadingSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("外观", selection: $settings.appearanceMode) {
+                    ForEach(AppearanceMode.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("外观")
+            } footer: {
+                Text("「跟随系统」会使用 macOS 全局浅色 / 深色设置。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+
+            Section {
+                HStack {
+                    Slider(value: $settings.scrollSpeed,
+                           in: ReaderSettings.scrollSpeedRange,
+                           step: 0.25)
+                    Text(String(format: "%g×", settings.scrollSpeed))
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            } header: {
+                Text("滚动")
+            } footer: {
+                Text("触摸板滚动速度。1× 为系统默认，调高可让一次滑动翻得更远。仅作用于触摸板 / 妙控板，传统滚轮不受影响。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+
+            Section {
                 Picker("划词后", selection: $settings.selectionAutoAction) {
                     ForEach(SelectionAutoAction.allCases) { option in
                         Text(option.label).tag(option)
