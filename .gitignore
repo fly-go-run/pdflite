@@ -22,3 +22,6 @@ PDFLite.xcodeproj/
 .build/
 .swiftpm/
 Package.resolved
+
+# Local build output (xcodebuild -derivedDataPath build/)
+/build/

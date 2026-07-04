@@ -17,6 +17,16 @@ enum AppPaths {
         supportDirectory.appendingPathComponent("reader.sqlite", isDirectory: false)
     }
 
+    /// `~/Library/Application Support/PDFLite/thumbnails/` — bookshelf cover cache (Phase 5).
+    static var thumbnailsDirectory: URL {
+        let dir = supportDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
     /// `~/.config/pdflite/config.json` — DeepSeek key & similar runtime config (Phase 3).
     static var configFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser

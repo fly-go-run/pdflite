@@ -4,9 +4,26 @@ import os.log
 
 struct RecentFile: Identifiable, Codable, Hashable {
     let url: URL
+    var lastOpenedAt: Date
 
     var id: String { url.standardizedFileURL.path }
     var displayName: String { url.deletingPathExtension().lastPathComponent }
+
+    init(url: URL, lastOpenedAt: Date = Date()) {
+        self.url = url
+        self.lastOpenedAt = lastOpenedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case lastOpenedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        url = try container.decode(URL.self, forKey: .url)
+        lastOpenedAt = try container.decodeIfPresent(Date.self, forKey: .lastOpenedAt) ?? .distantPast
+    }
 }
 
 @MainActor
@@ -30,11 +47,17 @@ final class RecentFilesService {
         guard url.pathExtension.lowercased() == "pdf" else { return }
         let canonical = url.standardizedFileURL
         var updated = recentFiles.filter { $0.url.standardizedFileURL != canonical }
-        updated.insert(RecentFile(url: canonical), at: 0)
+        updated.insert(RecentFile(url: canonical, lastOpenedAt: Date()), at: 0)
         if updated.count > maxItems {
             updated = Array(updated.prefix(maxItems))
         }
         recentFiles = updated
+        save()
+    }
+
+    func remove(_ recent: RecentFile) {
+        let canonical = recent.url.standardizedFileURL
+        recentFiles.removeAll { $0.url.standardizedFileURL == canonical }
         save()
     }
 
