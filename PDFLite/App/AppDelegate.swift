@@ -1,6 +1,8 @@
 import AppKit
 import Observation
+import os.log
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Tracks the most recently activated document session so menus can fall back to it during the
 /// brief window after macOS makes our doc window key but before SwiftUI's `@FocusedValue` has
@@ -37,27 +39,22 @@ final class AppFocusState {
         revision += 1
     }
 
-    /// Make sure the active doc window is key and PDFView holds first responder. Activates the
-    /// app first if needed (Space-swipe scenarios where macOS hasn't auto-activated us yet).
-    /// No-ops when there's no tracked session, or the session's window isn't on the current
-    /// Space (so we don't yank focus from another visible window).
-    func reassertOrActivateDocumentWindow() {
-        guard let session = weakActiveSession,
+    /// Re-assert key-window + first-responder for the active doc window when PDFLite is already
+    /// the foreground app. Triggered after Space swipes, full-screen transitions, and app
+    /// activation — without it menu shortcuts go dead until the user clicks the document.
+    /// No-ops when PDFLite isn't active, so a Space swipe that happens to land on a Space
+    /// containing one of our windows doesn't steal focus from whatever app the user is using.
+    func reassertDocumentWindowFocus() {
+        guard NSApp.isActive,
+              let session = weakActiveSession,
               let window = session.pdfView?.window,
               window.isVisible,
-              window.isOnActiveSpace else {
+              window.isOnActiveSpace,
+              !fullScreenTransitioningWindowIDs.contains(ObjectIdentifier(window)) else {
             revision += 1
             return
         }
 
-        guard !fullScreenTransitioningWindowIDs.contains(ObjectIdentifier(window)) else {
-            revision += 1
-            return
-        }
-
-        if !NSApp.isActive {
-            NSApp.activate(ignoringOtherApps: true)
-        }
         if !window.isKeyWindow {
             window.makeKeyAndOrderFront(nil)
         }
@@ -96,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(180))
-                AppFocusState.shared.reassertOrActivateDocumentWindow()
+                AppFocusState.shared.reassertDocumentWindowFocus()
             }
         }
 
@@ -134,13 +131,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls where url.pathExtension.lowercased() == "pdf" {
+        // pdflite:// bootstrap URLs are handled by the WindowGroup scene; only route real files.
+        for url in urls where url.isFileURL && url.pathExtension.lowercased() == "pdf" {
             DocumentOpener.requestOpen(url: url)
         }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        AppFocusState.shared.reassertOrActivateDocumentWindow()
+        AppFocusState.shared.reassertDocumentWindowFocus()
+        // Background launches defer SwiftUI's initial window until first activation; if it
+        // still hasn't materialized shortly after, force one so the app is never a windowless
+        // Dock icon. Delayed so we don't race the initial window SwiftUI may be creating.
+        DocumentOpener.scheduleBootstrapCheck()
     }
 
     private func handleFullScreenTransition(_ notification: Notification,
@@ -151,37 +153,132 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppFocusState.shared.setFullScreenTransitioning(window, transitioning)
             guard reassertAfter else { return }
             try? await Task.sleep(for: .milliseconds(120))
-            AppFocusState.shared.reassertOrActivateDocumentWindow()
+            AppFocusState.shared.reassertDocumentWindowFocus()
         }
     }
 }
 
-/// Bridges Finder-driven open events to whichever window/session handles the document.
+/// Routes every "open this PDF" request — Finder, ⌘O, Open Recent, bookshelf, drag & drop — to
+/// the right window: a window already showing the file gets focused, an empty window gets
+/// reused, and otherwise a fresh window is spawned. Documents are never silently replaced.
 @MainActor
 enum DocumentOpener {
-    /// Multicast: each ReaderWindowView registers its session here. A pending URL is consumed by
-    /// the first registered session that is empty; otherwise it falls through and the OS will
-    /// likely have already opened a fresh window via WindowGroup.
+    private static let logger = Logger(subsystem: "com.pdflite.app", category: "DocumentOpener")
     private static var pendingURLs: [URL] = []
     private static var handlers: [() -> DocumentSession?] = []
+    /// True while a bootstrap window request is in flight — window materialization takes
+    /// ~100ms, during which a second "no windows yet!" check must not fire another one.
+    private static var bootstrapInFlight = false
+    /// Spawns a fresh reader window (wired to SwiftUI's openWindow by ReaderWindowView).
+    static var spawnWindow: (() -> Void)?
 
     static func requestOpen(url: URL) {
-        if let handler = handlers.first(where: { $0()?.canAcceptOpen == true }),
-           let session = handler() {
-            session.openDocument(url: url)
+        let standardized = url.standardizedFileURL
+        pruneHandlers()
+        logger.info("requestOpen \(standardized.lastPathComponent, privacy: .public): sessions=\(liveSessions().count) pending=\(pendingURLs.count) spawnWired=\(spawnWindow != nil)")
+
+        // Already open in some window? Focus it instead of opening a duplicate.
+        if let existing = liveSessions().first(where: { $0.fileURL == standardized }) {
+            existing.hostWindow?.makeKeyAndOrderFront(nil)
             return
         }
-        pendingURLs.append(url)
+
+        if let empty = liveSessions().first(where: { $0.canAcceptOpen }) {
+            empty.openDocument(url: standardized)
+            empty.hostWindow?.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        pendingURLs.append(standardized)
+        if spawnWindow != nil {
+            spawnWindow?()
+        } else {
+            // No window has ever appeared (cold launch). SwiftUI usually creates the initial
+            // window itself within a few hundred ms — check later instead of racing it, or we
+            // end up with a duplicate empty window burying the document tab.
+            scheduleBootstrapCheck()
+        }
+    }
+
+    /// Delayed "is there still no window?" check. Gives SwiftUI's own initial window time to
+    /// materialize before concluding it was skipped (which happens when a cold launch's odoc
+    /// event beats scene setup).
+    static func scheduleBootstrapCheck() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(800))
+            bootstrapWindowIfNeeded()
+        }
+    }
+
+    /// Deterministically ask SwiftUI for a reader window when none exists. The pdflite://
+    /// scheme is the only external event the WindowGroup accepts, so opening it always
+    /// materializes a reader window — even when openWindow isn't wired up yet.
+    private static func bootstrapWindowIfNeeded() {
+        pruneHandlers()
+        logger.info("bootstrapWindowIfNeeded: sessions=\(liveSessions().count) pending=\(pendingURLs.count) inFlight=\(bootstrapInFlight)")
+        guard liveSessions().isEmpty, !bootstrapInFlight,
+              let url = URL(string: "pdflite://reader") else { return }
+        bootstrapInFlight = true
+        NSWorkspace.shared.open(url)
+        // Failsafe: if no window ever registers (open failed), release the latch.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            bootstrapInFlight = false
+        }
+    }
+
+    /// Shared open panel. Multi-selection: the preferred (initiating) session takes the first
+    /// file if it's empty; every other file routes through requestOpen (new windows as needed).
+    static func presentOpenPanel(preferring preferred: DocumentSession? = nil) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType.pdf]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.begin { [weak preferred] response in
+            guard response == .OK else { return }
+            let urls = panel.urls
+            Task { @MainActor in
+                for url in urls {
+                    if let preferred, preferred.canAcceptOpen {
+                        preferred.openDocument(url: url)
+                    } else {
+                        requestOpen(url: url)
+                    }
+                }
+            }
+        }
     }
 
     /// Sessions register here so they can be discovered by the open handler.
     static func register(_ session: DocumentSession) {
+        pruneHandlers()
         handlers.append({ [weak session] in session })
+        bootstrapInFlight = false
+        logger.info("register: sessions=\(handlers.count) canAccept=\(session.canAcceptOpen) pending=\(pendingURLs.count)")
         AppFocusState.shared.activate(session)
-        // Drain any pending URL into the new session if it's empty.
-        if session.canAcceptOpen, let url = pendingURLs.first {
-            pendingURLs.removeFirst()
+        // Drain any pending URL into the new session if it's empty. URLs can queue up before
+        // any window exists (cold launch with documents while the app starts in the
+        // background), so after taking one, keep spawning windows until the queue is empty.
+        if session.canAcceptOpen, !pendingURLs.isEmpty {
+            let url = pendingURLs.removeFirst()
             session.openDocument(url: url)
+            // A sibling empty window created in the same launch burst may hold key status —
+            // surface the tab that actually has the document.
+            DispatchQueue.main.async { [weak session] in
+                session?.hostWindow?.makeKeyAndOrderFront(nil)
+            }
         }
+        if !pendingURLs.isEmpty {
+            spawnWindow?()
+        }
+    }
+
+    private static func liveSessions() -> [DocumentSession] {
+        handlers.compactMap { $0() }
+    }
+
+    private static func pruneHandlers() {
+        handlers.removeAll { $0() == nil }
     }
 }

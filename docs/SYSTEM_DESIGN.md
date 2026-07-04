@@ -1,9 +1,34 @@
 # PDFLite 系统设计方案
 
 状态：唯一权威设计文档，后续 AI coding 以本文为准  
-更新时间：2026-05-05
+更新时间：2026-05-06
 
 本文档是 PDFLite 第一版的唯一权威设计文档。后续 AI coding、架构 review、Phase 拆分、依赖判断、参考项目选择，都以本文为准。`AGENTS.md` 只作为入口文件，旧方案文档放入 `docs/archive/`，不得作为实现基准。
+
+## 0. 当前进度速览
+
+更新时间：2026-05-06
+
+已交付（Phase 1–4 全部完成 + 若干增强）：
+
+1. Phase 1 阅读闭环：打开 PDF、单/双页、Command+滚轮缩放、页码跳转、Outline、Thumbnail、Search、最近打开。
+2. Phase 2 注释和阅读状态：选区、按行高亮、SQLite 持久化、阅读位置恢复、删除高亮。
+3. Phase 3 划词翻译：DeepSeek SSE、浮卡、Inspector、缓存命中、跨页选区、自动动作（划词后）。
+4. Phase 4 论文增强：Smart Jump 返回栈、Reference preview、Figure/Table 跳转。
+5. 设计外增强：Settings 窗口（DeepSeek 配置 + 快捷键自定义 + 速查 tab）、ReaderSettings、PDFPageWarmupService（滚动预热）、工具栏并入标题栏、NavigationSplitView 三栏、底部浮动 capsule（页码/缩放）、NSVisualEffectView 材质统一。
+
+待办（仅一项）：
+
+1. Phase 5 起始页书架：把空状态的"最近打开"文本列表换成 PDF 首页缩略图书架。详见 §10.5。
+
+第一版到此基本闭环；除 Phase 5 外暂无新功能，后续以质量、性能、bug 修复为主。
+
+2026-07 体验修复与增强（Phase 6–8，已交付）：
+
+1. Phase 6 地基：仓库层移出 MainActor（GRDB 异步 API，SQLite 不再阻塞主线程；关窗 flush 保留同步变体）；打开流水线重排（后台解析 PDFDocument + 大纲树 → 按 URL 快速恢复阅读位置立即上屏 → SHA256/入库/高亮恢复后置，openGeneration 防竞态）；搜索改 `beginFindString` 异步增量 + 250ms 防抖 + 分批 flush；选区浮卡滚动时隐藏、停止后重定位（滚出视口不再重现），引用预览滚动/翻页/普通点击即消失；流式翻译中换选区不再强制重译（浮卡只显示与当前选区匹配的译文），翻译错误有"重试"入口，扫描版 PDF 显示无文本层提示横幅。
+2. Phase 7 习惯对齐：多窗口（DocumentOpener 统一路由：同文件聚焦已开窗口 / 空窗口复用 / 否则新开；⌘O 多选、拖放多文件、阅读中也可拖入）；大纲跟随当前页（高亮 + 祖先自动展开 + 滚动到可见）；侧栏 180–420pt 可拖；⌘0/⌘9 语义对齐 Preview；⌘G/⇧⌘G/⌘P 补齐；工具栏高亮按钮常驻置灰、tooltip 动态显示当前键位；UI 全中文（developmentLanguage: zh-Hans）；书架卡片改真 Button（键盘可达）+ 封面淡入；窗口标题 KVO 守卫防 SwiftUI 冲掉。
+3. Phase 8 论文增强：Figure/Table 跳转支持 "Fig./Tab." 缩写与 "see Figure 3" 前缀、Nature 式 "|" 题注；引用索引构建延迟 2s → 250ms。
+4. 原生标签页：reader 窗口 `tabbingMode = .preferred` + 首次 attach 时主动并入 "PDFLiteReader" 标签组（不依赖 AppKit 自动并组，后台/Finder 打开也进标签）；⌘T 新建标签页；标签可拖出成独立窗口做并排对照。配套两个关键修复：WindowGroup `.handlesExternalEvents(matching: [])`（否则 SwiftUI 对每个 odoc 事件额外造一个空窗口）、`window.isRestorable = false`（系统状态恢复只会复活空书架窗口）。
 
 ## 1. 设计目标
 
@@ -91,7 +116,7 @@ Persistence
 
 External Inputs
   本地 PDF 文件
-  ~/.config/myreader/config.json
+  ~/.config/pdflite/config.json
   DeepSeek OpenAI-compatible streaming API
 ```
 
@@ -266,14 +291,16 @@ Toolbar 第一版控件：
 10. 搜索入口。
 11. 翻译面板 toggle。
 
-快捷键：
+快捷键（默认值；用户可在 Settings → 快捷键 自定义，由 `Services/Shortcuts` + KeyboardShortcuts 包管理）：
 
-1. `Command-O` 打开 PDF。
-2. `Command-F` 搜索。
+1. `Command-O` 打开 PDF（不覆盖当前文档；已占用时开新窗口）。`Command-N` 新窗口（系统项，保留）。
+2. `Command-F` 搜索；`Command-G` / `Shift-Command-G` 下一个 / 上一个结果。
 3. `Command-+` 放大。
 4. `Command--` 缩小。
-5. `Command-0` actual size 或 fit width，review 时定。
-6. `Command-[` / `Command-]` 返回和前进阅读位置，Phase 4 可增强。
+5. `Command-0` 实际大小（对齐 Preview）；`Command-9` 适合宽度（两者独立绑定）。
+6. `Command-[` / `Command-]` 返回 / 前进阅读位置（Smart Jump 历史栈）。
+7. `Command-B` 切换侧栏。
+8. `Command-P` 打印。
 
 设计约束：
 
@@ -361,10 +388,10 @@ TranslationService
 
 ConfigLoader：
 
-1. 第一版按 `AGENTS.md`，从 `~/.config/myreader/config.json` 读取。
+1. 从 `~/.config/pdflite/config.json` 读取（路径由 `AppPaths.translationConfigURL` 提供）。
 2. 不把 API Key 写入源码。
 3. 不把 API Key 写入 SQLite。
-4. 配置文件缺失时 UI 给出明确提示。
+4. 配置文件缺失时 UI 给出明确提示，并允许用户在 Settings 窗口直接填写后回写文件。
 5. Keychain 作为后续增强，不进入第一版实现。
 
 TextCleaner：
@@ -459,13 +486,13 @@ SQLite：
 DeepSeek 配置：
 
 ```text
-~/.config/myreader/config.json
+~/.config/pdflite/config.json
 ```
 
 说明：
 
-1. SQLite 路径使用产品名 `PDFLite`。
-2. 配置路径当前按 `AGENTS.md` 保持 `myreader`，review 时建议决定是否统一改为 `~/.config/pdflite/config.json`。
+1. SQLite 路径使用产品名 `PDFLite`，由 `AppPaths.databaseURL` 提供。
+2. 配置路径已统一为 `~/.config/pdflite/config.json`，由 `AppPaths.translationConfigURL` 提供。
 3. API Key 不进入仓库，不进入 SQLite。
 
 ### 4.2 核心实体
@@ -578,7 +605,7 @@ PDFViewSelectionChanged
 
 1. 选区为空时关闭浮卡。
 2. 选区过短时只显示复制/高亮。
-3. 选区跨页时第一版可以只支持首个 page，并提示用户缩小范围；后续再增强。
+3. 选区跨页时完整支持：首页 + 尾页段落保留，浮卡定位到末页选区中点（见 `commit b9a1b1b`）。
 4. selection snapshot 不持久化，只有高亮/翻译时才落库。
 
 ### 5.4 选区到高亮
@@ -760,115 +787,103 @@ SearchState
 
 ## 10. Phase 交付设计
 
-### Phase 1：阅读闭环
+### Phase 1：阅读闭环 — 已完成
 
 范围：
 
-1. 项目骨架。
-2. 打开 PDF。
-3. PDFView 显示。
+1. 项目骨架（`PDFLiteApp` / `AppDelegate` / `AppCommands`）。
+2. 打开 PDF（`DocumentSession.openDocument`）。
+3. PDFView 显示（`PDFKitRepresentable` + `ReaderPDFView`）。
 4. 单页连续和双页连续。
-5. Command 加滚轮缩放。
-6. 页码显示和跳转。
-7. Outline。
-8. Thumbnail。
-9. Search。
-10. 最近打开文件。
+5. Command 加滚轮缩放（`ReaderPDFView.scrollWheel`）。
+6. 页码显示和跳转（底部浮动 capsule + 工具栏）。
+7. Outline（`Sidebar/OutlineSidebar`）。
+8. Thumbnail（`Sidebar/ThumbnailSidebar`）。
+9. Search（`Search/SearchService` + `SearchBar`）。
+10. 最近打开文件（`Recent/RecentFilesService`）。
 
-允许参考：
+参考来源：PageFlow、Apple PDFKit 文档。
 
-1. PageFlow。
-2. Apple PDFKit 文档。
+验收：6 项全部通过；空状态当前为文本列表，将在 §10.5 升级为书架。
 
-默认不主动参考 Skim。
-
-验收标准：
-
-1. 能打开至少 3 个不同论文 PDF。
-2. 滚动、缩放、页码跳转不卡 UI。
-3. 单双页切换后页码状态正确。
-4. `Command-F` 能搜索并跳转。
-5. 关闭重开后能恢复最近打开记录。
-6. 代码里没有 sandbox、SwiftData、CoreData、Provider 抽象。
-
-### Phase 2：注释和阅读状态
+### Phase 2：注释和阅读状态 — 已完成
 
 范围：
 
-1. 选区监听。
-2. selection rects 计算。
-3. 高亮创建。
-4. SQLite schema 和 GRDB repositories。
+1. 选区监听（`Services/SelectionService`）。
+2. 多行 selection rects 计算（按行存储，不跨栏）。
+3. 高亮创建（`Services/AnnotationService`）。
+4. SQLite schema 和 GRDB repositories（`Persistence/Database` + `*Repository`）。
 5. 重新打开恢复高亮。
-6. 阅读位置恢复。
-7. 删除高亮。
+6. 阅读位置恢复（last_page / last_zoom / display_mode）。
+7. 删除高亮（硬删除）。
 
-允许参考：
+参考来源：PageFlow、PDFAnnotationEditor、Apple PDFKit 文档、Skim（按需）。
 
-1. PageFlow。
-2. Apple PDFKit 文档。
-3. Skim。
-4. PDFAnnotationEditor。
+验收：6 项全部通过，未写回 PDF 原文件。
 
-验收标准：
-
-1. 单行、多行选区高亮位置正确。
-2. 双栏 PDF 不用一个大矩形跨栏高亮。
-3. 关闭重开后高亮恢复。
-4. 删除高亮后数据库和页面一致。
-5. 阅读页码、缩放、display mode 能恢复。
-6. 不写回 PDF 原文件。
-
-### Phase 3：划词翻译
+### Phase 3：划词翻译 — 已完成
 
 范围：
 
-1. ConfigLoader。
-2. TextCleaner。
-3. PromptBuilder。
-4. DeepSeekClient SSE。
-5. TranslationService。
-6. NSPanel 浮卡。
-7. 右侧 Translation Inspector。
-8. Translation cache。
+1. `Translation/ConfigLoader`。
+2. `Translation/TextCleaner`。
+3. `Translation/PromptBuilder`。
+4. `Translation/DeepSeekClient`（SSE）。
+5. `Translation/TranslationService`。
+6. NSPanel 浮卡（`SelectionPanelController` + `SelectionFloatingView`）。
+7. 右侧 `TranslationInspector`。
+8. Translation cache（`TranslationRepository`）。
 9. 高亮和译文绑定。
+10. 跨页选区（首页+尾页段落保留）。
+11. "划词后"自动动作三态（关 / 自动翻译 / 高亮+翻译）。
 
-允许参考：
+参考来源：macai（SSE）、Apple 文档。
 
-1. macai。
-2. Easydict 概念参考。
-3. zotero-pdf-translate 概念参考。
-4. Apple 文档。
+验收：API Key 校验、流式输出、取消、缓存命中、浮卡定位、跨页选区均通过；未引入多 Provider 抽象、OpenAI SDK、Alamofire。
 
-验收标准：
-
-1. 无 API Key 时提示明确。
-2. 有 API Key 时能流式翻译选中文本。
-3. 取消、新选区、关闭窗口都能停止旧请求。
-4. 相同文本二次翻译命中缓存。
-5. 浮卡定位不跑出屏幕。
-6. Inspector 历史可跳回原文。
-7. 不引入 OpenAI SDK、Alamofire、多 Provider 抽象。
-
-### Phase 4：论文增强
+### Phase 4：论文增强 — 已完成
 
 范围：
 
-1. Smart Jump v0。
-2. Reference preview。
-3. Figure/Table 跳转。
+1. Smart Jump v0（`NavigationHistoryService`，⌘[ / ⌘]）。
+2. Reference preview（`ReferenceIndex` + `ReferencePreviewPanelController`）。
+3. Figure/Table 跳转（`FigureJumpService` + `FigureReference`）。
 
-允许参考：
+参考来源：Sioyek、SimplePDF（仅概念）。
 
-1. Sioyek 概念参考。
-2. SimplePDF 概念参考。
-3. 前面所有项目。
+验收：`[12]` 引用预览、Figure/Table 跳转、返回阅读位置全部可用。
+
+### Phase 5：起始页书架 — 待办（当前唯一规划项）
+
+背景：当前 `EmptyDocumentView` 是居中竖排的 SF Symbol + 文本列表，整页大量留白，缺少视觉锚点。书架式缩略图让用户"刷一眼认出哪本"，对论文阅读尤其友好（封面差异比文件名差异更直观）。
+
+范围：
+
+1. `ThumbnailCache`（actor）：按 `FileHash` 做 key，PDF 首页位图缓存到 `~/Library/Application Support/PDFLite/thumbnails/`，避免冷启动重复渲染。
+2. `RecentFile` 增加 `lastOpenedAt: Date` 字段，并按时间倒序展示。
+3. `EmptyDocumentView` 改版：顶部 hero 区（图标 + 主按钮 + 拖放提示），下方 `LazyVGrid`（adaptive ~140pt 列宽）渲染最近文件书架卡片。
+4. 单卡片：缩略图（约 3:4 比例）+ 文件名（一行截断）+ 上次打开时间（次要）；hover 抬升阴影；右键菜单"在 Finder 中显示 / 从最近移除"。
+5. 拖放：`onDrop` 接受 PDF URL，等价于打开。
+6. 失败兜底：源文件被移动/删除时仍走当前的 `load()` 过滤；缩略图渲染失败回退到 SF Symbol 占位。
+
+非目标：
+
+1. 不做文献库、标签、收藏分类。
+2. 不做云同步、跨设备最近列表。
+3. 不解析 PDF metadata 标题做封面叠字（保留文件名足够）。
+4. 不做封面自定义、上色、主题模板。
+
+允许参考：Apple HIG、PDFKit `PDFPage.thumbnail(of:for:)` 文档、`references/PageFlow` 是否有缩略图缓存可借鉴。
 
 验收标准：
 
-1. 常见 `[12]` 引用能识别并预览 References 条目。
-2. Figure/Table 能通过全文搜索定位候选页。
-3. 支持返回阅读位置。
+1. 有 5+ 个最近文件时，书架满屏铺开，不再视觉空旷。
+2. 二次打开 app 时，缩略图从缓存秒出，无可见渲染抖动。
+3. 文件被移动后再次打开时，对应卡片消失或显示占位。
+4. 拖入 PDF 文件可直接打开。
+5. 缩略图不写入 SQLite（只走文件系统缓存目录）。
+6. `LazyVGrid` 列数随窗口宽度自适应，不出现单列长条。
 
 ## 11. 测试策略
 
@@ -1060,15 +1075,19 @@ Objective-C 到 Swift 对照：
 | 出现 Provider 协议、多实现、Provider registry | 第一版只用 `DeepSeekClient` |
 | 开始做论文库、标签、DOI、引用图谱 | 第一版只做阅读器和划词翻译 |
 
-## 16. 待 Review 决策点
+## 16. 已落地的早期决策
 
-1. 配置路径是否从 `~/.config/myreader/config.json` 统一改成 `~/.config/pdflite/config.json`。
-2. API Key 第一版是否继续用本地 config 文件，还是提前改成 Keychain。
-3. 产品显示名用 `PDFLite`、`pdflite` 还是其他名称。
-4. SQLite 路径是否使用 `~/Library/Application Support/PDFLite/reader.sqlite`。
-5. `Command-0` 是 actual size 还是 fit width。
-6. 第一版是否需要支持多窗口，还是先单窗口。
-7. Phase 1 是否把 search 放进第一周，还是先延后到 Phase 1.5。
-8. 选区跨页时第一版是禁止、只取第一页，还是完整支持。
-9. 翻译 prompt 默认输出“只给译文”还是“译文 + 最多 3 条术语解释”。
-10. 是否需要单独创建 `docs/PROMPTS.md` 固化翻译 prompt。
+下列在第一版开发中已经决定，不再视为 review 项；保留在此便于追溯：
+
+1. 配置路径：`~/.config/pdflite/config.json`（统一产品名）。
+2. API Key：第一版继续用本地 config 文件，Keychain 不进入第一版。
+3. 产品显示名：`PDFLite`。
+4. SQLite 路径：`~/Library/Application Support/PDFLite/reader.sqlite`。
+5. 缩放快捷键：`Actual Size` 与 `Fit Width` 各自独立绑定，由 `Shortcuts` 服务管理用户自定义键位（`AppCommands.swift`）。
+6. 多窗口：使用 SwiftUI `WindowGroup` 支持多窗口，每窗口一个 `DocumentSession`。
+7. Search：在 Phase 1 一并交付，未推迟。
+8. 跨页选区：完整支持（首页 + 尾页段落保留），见 `commit b9a1b1b`。
+9. 翻译 prompt：默认”只给译文”，无术语解释段，见 `Translation/PromptBuilder`。
+10. `docs/PROMPTS.md`：未单独建立，prompt 内聚在 `PromptBuilder` 中即可。
+
+后续如果出现新的设计选择需要 review，重新建立”待 Review 决策点”小节。

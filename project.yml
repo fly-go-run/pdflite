@@ -3,7 +3,9 @@ options:
   bundleIdPrefix: com.pdflite
   deploymentTarget:
     macOS: "14.0"
-  developmentLanguage: en
+  # zh-Hans so system-provided menus (文件/编辑/窗口/帮助) localize to Chinese, matching the
+  # app's own Chinese UI strings.
+  developmentLanguage: zh-Hans
   groupSortPosition: top
   generateEmptyDirectories: false
   defaultConfig: Debug
@@ -22,7 +24,7 @@ settings:
     DEVELOPMENT_TEAM: ""
     DEAD_CODE_STRIPPING: YES
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"

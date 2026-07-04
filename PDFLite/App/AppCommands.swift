@@ -8,24 +8,33 @@ struct AppCommands: Commands {
     @Bindable var shortcuts: AppShortcuts
 
     var body: some Commands {
-        CommandGroup(replacing: .newItem) {
+        // `after: .newItem` keeps the system-provided New Window (⌘N) so a second document can
+        // always be opened side by side.
+        CommandGroup(after: .newItem) {
+            // Reader windows have tabbingMode = .preferred, so a spawned window lands as a new
+            // tab in the current tab group — the platform-standard ⌘T behavior.
+            Button("新建标签页") {
+                DocumentOpener.spawnWindow?()
+            }
+            .keyboardShortcut("t", modifiers: .command)
+
             // Cmd+O is platform-standard; we keep it hard-coded so the customizable list isn't
-            // crowded with defaults users won't change anyway.
-            Button("Open…") {
-                focusedSession?.presentOpenPanel()
+            // crowded with defaults users won't change anyway. Routing goes through
+            // DocumentOpener so an occupied window is never silently replaced.
+            Button("打开…") {
+                DocumentOpener.presentOpenPanel(preferring: focusedSession)
             }
             .keyboardShortcut("o", modifiers: .command)
-            .disabled(focusedSession == nil)
 
-            Menu("Open Recent") {
+            Menu("最近打开") {
                 ForEach(recentFiles.recentFiles) { recent in
                     Button(recent.displayName) {
-                        focusedSession?.openDocument(url: recent.url)
+                        DocumentOpener.requestOpen(url: recent.url)
                     }
                 }
                 if !recentFiles.recentFiles.isEmpty {
                     Divider()
-                    Button("Clear Menu") {
+                    Button("清除菜单") {
                         recentFiles.clear()
                     }
                 }
@@ -33,61 +42,85 @@ struct AppCommands: Commands {
             .disabled(recentFiles.recentFiles.isEmpty)
         }
 
+        CommandGroup(replacing: .printItem) {
+            Button("打印…") {
+                focusedSession?.printDocument()
+            }
+            .keyboardShortcut("p", modifiers: .command)
+            .disabled(focusedSession?.hasDocument != true)
+        }
+
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Find…") {
+            Button("查找…") {
                 focusedSession?.toggleSearch(open: true)
             }
             .keyboardShortcut("f", modifiers: .command)
             .disabled(focusedSession?.hasDocument != true)
+
+            Button("查找下一个") {
+                focusedSession?.search.next()
+            }
+            .keyboardShortcut("g", modifiers: .command)
+            .disabled(focusedSession?.search.hasResults != true)
+
+            Button("查找上一个") {
+                focusedSession?.search.previous()
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled(focusedSession?.search.hasResults != true)
         }
 
-        CommandMenu("View") {
-            Button("Zoom In") { focusedSession?.zoomIn() }
+        // Injected into the system View menu (labeled 显示 under zh-Hans) instead of a
+        // CommandMenu, which would create a second menu with the same name.
+        CommandGroup(after: .sidebar) {
+            Divider()
+
+            Button("放大") { focusedSession?.zoomIn() }
                 .keyboardShortcut(shortcuts.value(for: .zoomIn))
                 .disabled(focusedSession?.hasDocument != true)
 
-            Button("Zoom Out") { focusedSession?.zoomOut() }
+            Button("缩小") { focusedSession?.zoomOut() }
                 .keyboardShortcut(shortcuts.value(for: .zoomOut))
                 .disabled(focusedSession?.hasDocument != true)
 
-            Button("Actual Size") { focusedSession?.actualSize() }
+            Button("实际大小") { focusedSession?.actualSize() }
                 .keyboardShortcut(shortcuts.value(for: .actualSize))
                 .disabled(focusedSession?.hasDocument != true)
 
-            Button("Fit Width") { focusedSession?.fitWidth() }
+            Button("适合宽度") { focusedSession?.fitWidth() }
                 .keyboardShortcut(shortcuts.value(for: .fitWidth))
                 .disabled(focusedSession?.hasDocument != true)
 
             Divider()
 
-            Picker("Display", selection: Binding(
+            Picker("页面布局", selection: Binding(
                 get: { focusedSession?.displayMode ?? .singlePageContinuous },
                 set: { focusedSession?.displayMode = $0 }
             )) {
-                Text("Single Page Continuous").tag(PDFDisplayMode.singlePageContinuous)
-                Text("Two Pages Continuous").tag(PDFDisplayMode.twoUpContinuous)
+                Text("单页连续").tag(PDFDisplayMode.singlePageContinuous)
+                Text("双页连续").tag(PDFDisplayMode.twoUpContinuous)
             }
             .pickerStyle(.inline)
             .disabled(focusedSession?.hasDocument != true)
 
             Divider()
 
-            Button(focusedSession?.isSidebarVisible == true ? "Hide Sidebar" : "Show Sidebar") {
+            Button(focusedSession?.isSidebarVisible == true ? "隐藏侧栏" : "显示侧栏") {
                 focusedSession?.isSidebarVisible.toggle()
             }
             .keyboardShortcut(shortcuts.value(for: .toggleSidebar))
             .disabled(focusedSession?.hasDocument != true)
         }
 
-        CommandMenu("Tools") {
-            Button("Translate Selection") {
+        CommandMenu("工具") {
+            Button("翻译选区") {
                 focusedSession?.translateCurrentSelection()
             }
             .keyboardShortcut(shortcuts.value(for: .translateSelection))
             .disabled(focusedSession?.hasSelection != true)
 
-            Button("Highlight Selection") {
+            Button("高亮选区") {
                 focusedSession?.highlightSelection()
             }
             .keyboardShortcut(shortcuts.value(for: .highlightSelection))
@@ -96,40 +129,40 @@ struct AppCommands: Commands {
             Divider()
 
             Button(focusedSession?.isTranslationInspectorVisible == true
-                   ? "Hide Translation Inspector"
-                   : "Show Translation Inspector") {
+                   ? "隐藏翻译面板"
+                   : "显示翻译面板") {
                 focusedSession?.isTranslationInspectorVisible.toggle()
             }
             .keyboardShortcut(shortcuts.value(for: .toggleInspector))
             .disabled(focusedSession?.hasDocument != true)
         }
 
-        CommandMenu("Go") {
-            Button("Next Page") { focusedSession?.nextPage() }
+        CommandMenu("前往") {
+            Button("下一页") { focusedSession?.nextPage() }
                 .keyboardShortcut(shortcuts.value(for: .nextPage))
                 .disabled(focusedSession?.canGoNext != true)
 
-            Button("Previous Page") { focusedSession?.previousPage() }
+            Button("上一页") { focusedSession?.previousPage() }
                 .keyboardShortcut(shortcuts.value(for: .previousPage))
                 .disabled(focusedSession?.canGoPrevious != true)
 
             Divider()
 
-            Button("First Page") { focusedSession?.goToFirstPage() }
+            Button("第一页") { focusedSession?.goToFirstPage() }
                 .keyboardShortcut(shortcuts.value(for: .firstPage))
                 .disabled(focusedSession?.hasDocument != true)
 
-            Button("Last Page") { focusedSession?.goToLastPage() }
+            Button("最后一页") { focusedSession?.goToLastPage() }
                 .keyboardShortcut(shortcuts.value(for: .lastPage))
                 .disabled(focusedSession?.hasDocument != true)
 
             Divider()
 
-            Button("Back") { focusedSession?.goBack() }
+            Button("后退") { focusedSession?.goBack() }
                 .keyboardShortcut(shortcuts.value(for: .goBack))
                 .disabled(focusedSession?.navigation.canGoBack != true)
 
-            Button("Forward") { focusedSession?.goForward() }
+            Button("前进") { focusedSession?.goForward() }
                 .keyboardShortcut(shortcuts.value(for: .goForward))
                 .disabled(focusedSession?.navigation.canGoForward != true)
         }
