@@ -1,14 +1,13 @@
 import Foundation
 import GRDB
 
-@MainActor
-final class TranslationRepository {
+final class TranslationRepository: Sendable {
     static let shared = TranslationRepository()
 
     private let db = Database.shared
 
-    func findCache(byHash hash: String) throws -> TranslationRecord? {
-        try db.writer.read { db in
+    func findCache(byHash hash: String) async throws -> TranslationRecord? {
+        try await db.writer.read { db in
             try TranslationRecord
                 .filter(Column("text_hash") == hash)
                 .order(Column("created_at").desc)
@@ -16,8 +15,8 @@ final class TranslationRepository {
         }
     }
 
-    func findInDocument(textHash: String, documentId: Int64, pageIndex: Int?) throws -> TranslationRecord? {
-        try db.writer.read { db in
+    func findInDocument(textHash: String, documentId: Int64, pageIndex: Int?) async throws -> TranslationRecord? {
+        try await db.writer.read { db in
             var request = TranslationRecord
                 .filter(Column("text_hash") == textHash)
                 .filter(Column("document_id") == documentId)
@@ -34,8 +33,8 @@ final class TranslationRepository {
         }
     }
 
-    func insert(_ record: TranslationRecord) throws -> TranslationRecord {
-        try db.writer.write { db in
+    func insert(_ record: TranslationRecord) async throws -> TranslationRecord {
+        try await db.writer.write { db in
             var fresh = record
             try fresh.insert(db)
             return fresh

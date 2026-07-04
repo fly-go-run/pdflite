@@ -3,8 +3,9 @@ import GRDB
 import os.log
 
 /// Single shared GRDB DatabaseQueue. Owns schema migrations.
-@MainActor
-final class Database {
+/// Not main-actor-bound: DatabaseQueue serializes access internally, and repositories call it
+/// through GRDB's async API so SQLite I/O never blocks the main thread.
+final class Database: Sendable {
     static let shared = Database()
 
     private let logger = Logger(subsystem: "com.pdflite.app", category: "Database")

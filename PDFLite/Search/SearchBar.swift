@@ -10,7 +10,7 @@ struct SearchBar: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("Search", text: $session.search.query)
+            TextField("搜索", text: $session.search.query)
                 .textFieldStyle(.plain)
                 .frame(width: 220)
                 .focused($fieldFocused)
@@ -21,7 +21,7 @@ struct SearchBar: View {
                     if newValue.isEmpty {
                         session.search.clear()
                     } else {
-                        runSearch()
+                        scheduleSearch()
                     }
                 }
 
@@ -30,6 +30,11 @@ struct SearchBar: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .font(.system(size: 12))
+
+                if session.search.isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                }
 
                 Divider().frame(height: 14)
 
@@ -44,8 +49,11 @@ struct SearchBar: View {
                 } label: {
                     Image(systemName: "chevron.down")
                 }
-            } else if !session.search.query.isEmpty && !session.search.isSearching {
-                Text("No results")
+            } else if session.search.isSearching {
+                ProgressView()
+                    .controlSize(.small)
+            } else if !session.search.query.isEmpty {
+                Text("无结果")
                     .foregroundStyle(.secondary)
                     .font(.system(size: 12))
             }
@@ -73,5 +81,10 @@ struct SearchBar: View {
     private func runSearch() {
         guard let document = session.document else { return }
         session.search.search(in: document)
+    }
+
+    private func scheduleSearch() {
+        guard let document = session.document else { return }
+        session.search.scheduleSearch(in: document)
     }
 }

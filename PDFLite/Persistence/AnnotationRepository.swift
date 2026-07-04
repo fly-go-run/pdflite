@@ -1,14 +1,13 @@
 import Foundation
 import GRDB
 
-@MainActor
-final class AnnotationRepository {
+final class AnnotationRepository: Sendable {
     static let shared = AnnotationRepository()
 
     private let db = Database.shared
 
-    func list(forDocumentId documentId: Int64) throws -> [AnnotationRecord] {
-        try db.writer.read { db in
+    func list(forDocumentId documentId: Int64) async throws -> [AnnotationRecord] {
+        try await db.writer.read { db in
             try AnnotationRecord
                 .filter(Column("document_id") == documentId)
                 .order(Column("page_index"), Column("created_at"))
@@ -18,8 +17,8 @@ final class AnnotationRepository {
 
     /// Insert one or more rows that share a `groupId`. Multi-page highlights call this with one
     /// record per page; single-page highlights call it with a one-element array.
-    func insertAll(_ records: [AnnotationRecord]) throws {
-        try db.writer.write { db in
+    func insertAll(_ records: [AnnotationRecord]) async throws {
+        try await db.writer.write { db in
             for record in records {
                 try record.insert(db)
             }
@@ -28,8 +27,8 @@ final class AnnotationRepository {
 
     /// Delete every row with the given `groupId`. Matches the runtime behavior of
     /// `AnnotationService.removeRuntimeAnnotations(groupId:)` so the DB and PDFView stay in sync.
-    func delete(groupId: String) throws {
-        _ = try db.writer.write { db in
+    func delete(groupId: String) async throws {
+        _ = try await db.writer.write { db in
             try AnnotationRecord.filter(Column("group_id") == groupId).deleteAll(db)
         }
     }
@@ -37,8 +36,8 @@ final class AnnotationRepository {
     /// Set `translation_id` on every record in a group. Auto-translate-on-highlight calls this
     /// after the translation lands so any per-page row in the group can resolve its bound
     /// translation later.
-    func updateTranslationId(groupId: String, translationId: Int64?) throws {
-        _ = try db.writer.write { db in
+    func updateTranslationId(groupId: String, translationId: Int64?) async throws {
+        _ = try await db.writer.write { db in
             try AnnotationRecord
                 .filter(Column("group_id") == groupId)
                 .updateAll(
@@ -51,8 +50,8 @@ final class AnnotationRepository {
 
     /// Concatenated `selected_text` for every row in a group, in document order. Used by the
     /// right-click "复制原文" menu.
-    func concatenatedSelectedText(groupId: String) throws -> String {
-        try db.writer.read { db in
+    func concatenatedSelectedText(groupId: String) async throws -> String {
+        try await db.writer.read { db in
             let rows = try AnnotationRecord
                 .filter(Column("group_id") == groupId)
                 .order(Column("page_index"), Column("created_at"))

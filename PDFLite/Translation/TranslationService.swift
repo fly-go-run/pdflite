@@ -30,6 +30,9 @@ final class TranslationService {
     /// Callback supplied with `translate()` to notify a successful save. Cleared on cancel/replace
     /// so a stale handler can't fire against a new translation.
     private var pendingOnSaved: ((TranslationRecord) -> Void)?
+    /// Last request, kept so an error state can offer "重试" even after the selection is gone.
+    @ObservationIgnored private var lastRequestSnapshot: SelectionSnapshot?
+    @ObservationIgnored private var lastRequestDocumentId: Int64?
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -53,6 +56,19 @@ final class TranslationService {
     func reset() {
         cancelInFlight()
         current = nil
+        lastRequestSnapshot = nil
+        lastRequestDocumentId = nil
+    }
+
+    /// True when the current output is an error and we still know what was requested.
+    var canRetry: Bool {
+        current?.errorMessage != nil && lastRequestSnapshot != nil
+    }
+
+    /// Re-run the last translation request (typically after a network / config error).
+    func retryLast() {
+        guard let snapshot = lastRequestSnapshot else { return }
+        translate(snapshot: snapshot, documentId: lastRequestDocumentId)
     }
 
     // MARK: - Translate
@@ -68,6 +84,8 @@ final class TranslationService {
                    onSaved: ((TranslationRecord) -> Void)? = nil) {
         cancelInFlight()
         pendingOnSaved = onSaved
+        lastRequestSnapshot = snapshot
+        lastRequestDocumentId = documentId
 
         let config: TranslationConfig
         do {
@@ -95,34 +113,6 @@ final class TranslationService {
         let cleaned = TextCleaner.clean(snapshot.rawText)
         let hash = Self.cacheKey(cleaned: cleaned, target: targetLanguage, model: config.model)
 
-        // Cache lookup
-        if let cached = try? TranslationRepository.shared.findCache(byHash: hash) {
-            let committed = commitCachedTranslationIfNeeded(
-                cached: cached,
-                hash: hash,
-                cleaned: cleaned,
-                snapshot: snapshot,
-                documentId: documentId,
-                model: config.model
-            )
-            current = TranslationOutput(
-                sourceText: snapshot.rawText,
-                cleanedText: cleaned,
-                pageIndex: snapshot.pageIndex,
-                partial: committed.targetText,
-                isStreaming: false,
-                fromCache: true,
-                errorMessage: nil,
-                startedAt: Date(),
-                completedAt: Date()
-            )
-            let handler = pendingOnSaved
-            pendingOnSaved = nil
-            handler?(committed)
-            return
-        }
-
-        // Fresh stream
         current = TranslationOutput(
             sourceText: snapshot.rawText,
             cleanedText: cleaned,
@@ -139,6 +129,19 @@ final class TranslationService {
         let client = DeepSeekClient(config: config, session: session)
 
         streamTask = Task { [weak self] in
+            // Cache lookup happens inside the task so SQLite never blocks the call site; a hit
+            // resolves in a few ms without touching the network.
+            if let cached = try? await TranslationRepository.shared.findCache(byHash: hash) {
+                if Task.isCancelled { return }
+                await self?.finishFromCache(cached: cached,
+                                            hash: hash,
+                                            cleaned: cleaned,
+                                            snapshot: snapshot,
+                                            documentId: documentId,
+                                            model: config.model)
+                return
+            }
+            if Task.isCancelled { return }
             await self?.consumeStream(client: client,
                                       messages: messages,
                                       hash: hash,
@@ -243,7 +246,8 @@ final class TranslationService {
             createdAt: Date()
         )
         do {
-            let saved = try TranslationRepository.shared.insert(record)
+            let saved = try await TranslationRepository.shared.insert(record)
+            if Task.isCancelled { return }
             let handler = pendingOnSaved
             pendingOnSaved = nil
             handler?(saved)
@@ -252,15 +256,45 @@ final class TranslationService {
         }
     }
 
+    /// Cache-hit completion: commit a per-document row if needed, then flip `current` from the
+    /// optimistic streaming state to the cached result.
+    private func finishFromCache(cached: TranslationRecord,
+                                 hash: String,
+                                 cleaned: String,
+                                 snapshot: SelectionSnapshot,
+                                 documentId: Int64?,
+                                 model: String) async {
+        let committed = await commitCachedTranslationIfNeeded(
+            cached: cached,
+            hash: hash,
+            cleaned: cleaned,
+            snapshot: snapshot,
+            documentId: documentId,
+            model: model
+        )
+        if Task.isCancelled { return }
+
+        if var existing = current {
+            existing.partial = committed.targetText
+            existing.isStreaming = false
+            existing.fromCache = true
+            existing.completedAt = Date()
+            current = existing
+        }
+        let handler = pendingOnSaved
+        pendingOnSaved = nil
+        handler?(committed)
+    }
+
     private func commitCachedTranslationIfNeeded(cached: TranslationRecord,
                                                  hash: String,
                                                  cleaned: String,
                                                  snapshot: SelectionSnapshot,
                                                  documentId: Int64?,
-                                                 model: String) -> TranslationRecord {
+                                                 model: String) async -> TranslationRecord {
         guard let documentId else { return cached }
 
-        if let existing = try? TranslationRepository.shared.findInDocument(
+        if let existing = try? await TranslationRepository.shared.findInDocument(
             textHash: hash,
             documentId: documentId,
             pageIndex: snapshot.pageIndex
@@ -279,7 +313,7 @@ final class TranslationService {
             model: model,
             createdAt: Date()
         )
-        return (try? TranslationRepository.shared.insert(record)) ?? cached
+        return (try? await TranslationRepository.shared.insert(record)) ?? cached
     }
 
     private func appendToCurrent(_ delta: String) {

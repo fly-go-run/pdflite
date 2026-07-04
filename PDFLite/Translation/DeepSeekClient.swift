@@ -29,6 +29,10 @@ struct DeepSeekClient {
             let task = Task {
                 do {
                     let (bytes, response) = try await session.bytes(for: request)
+                    // Consumer-side cancellation reaches here via continuation.onTermination →
+                    // task.cancel(); checking right after connect avoids reading a body we no
+                    // longer want, and AsyncBytes tears down the connection on cancellation.
+                    try Task.checkCancellation()
                     if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                         let body = await Self.collectBody(from: bytes, limit: 4096)
                         continuation.finish(throwing: Self.error(forStatus: http.statusCode, body: body))
