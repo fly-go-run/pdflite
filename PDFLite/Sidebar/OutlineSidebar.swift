@@ -93,12 +93,35 @@ private struct OutlineDisclosure: View {
     }
 }
 
+/// Thin observing wrapper: its body re-runs for every visible row whenever the active outline
+/// entry changes (all rows read `activeOutlineItemID`), but it only does one comparison and
+/// hands off to the Equatable core — so the HStack/background/Button tree is rebuilt for just
+/// the two rows whose active state actually flipped, not the whole sidebar on every page turn.
 private struct OutlineItemLabel: View {
     let item: OutlineItem
     let session: DocumentSession
 
     var body: some View {
-        let isActive = session.activeOutlineItemID == item.id
+        OutlineItemLabelCore(
+            item: item,
+            isActive: session.activeOutlineItemID == item.id,
+            session: session
+        )
+    }
+}
+
+private struct OutlineItemLabelCore: View, Equatable {
+    let item: OutlineItem
+    let isActive: Bool
+    let session: DocumentSession
+
+    // session is deliberately ignored: it's the same object for the window's lifetime and only
+    // serves the tap action.
+    nonisolated static func == (lhs: OutlineItemLabelCore, rhs: OutlineItemLabelCore) -> Bool {
+        lhs.item.id == rhs.item.id && lhs.isActive == rhs.isActive
+    }
+
+    var body: some View {
         Button {
             if let dest = item.destination {
                 session.goToDestination(dest)

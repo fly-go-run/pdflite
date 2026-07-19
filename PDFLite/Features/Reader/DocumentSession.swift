@@ -118,6 +118,9 @@ final class DocumentSession {
     private(set) var activeOutlineItemID: String?
     private(set) var activeOutlineAncestorIDs: Set<String> = []
     @ObservationIgnored private var outlineFlat: [FlatOutlineEntry] = []
+    /// `outlineFlat` re-sorted by pageIndex (stable), so the per-page-turn active-entry lookup
+    /// can binary-search instead of scanning the whole outline.
+    @ObservationIgnored private var outlineByPage: [FlatOutlineEntry] = []
     var search = SearchService()
 
     // MARK: - Navigation history (Smart Jump v0)
@@ -155,16 +158,20 @@ final class DocumentSession {
     fileprivate var pendingScale: CGFloat?
 
     // Debounced reading-state save.
-    private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private let saveDebouncer = TrailingDebouncer()
     private var openTask: Task<Void, Never>?
     /// Monotonic counter guarding the async open pipeline: every openDocument/closeDocument bumps
     /// it, and each await-resume point checks it so a superseded open can't apply stale state.
     @ObservationIgnored private var openGeneration = 0
     private let saveDebounce: Duration = .milliseconds(500)
     private let pageWarmup = PDFPageWarmupService()
-    @ObservationIgnored private var scrollIdleTask: Task<Void, Never>?
+    @ObservationIgnored private let scrollIdleDebouncer = TrailingDebouncer()
+    @ObservationIgnored private let scaleWarmupDebouncer = TrailingDebouncer()
     @ObservationIgnored private var isScrollActive = false
     @ObservationIgnored private var lastWarmupDirection: PDFPageWarmupDirection = .both
+    /// FigureReference regex result cached per selection revision — refreshPanel reads
+    /// `currentFigureReference` on every panel update, including once per streamed token.
+    @ObservationIgnored private var figureReferenceCache: (revision: Int, value: FigureReference?)?
 
     var hasDocument: Bool { document != nil }
     var canAcceptOpen: Bool { document == nil && fileURL == nil }
@@ -250,6 +257,11 @@ final class DocumentSession {
         if let children = parsed.outline?.children {
             Self.flattenOutline(children, ancestors: [], into: &outlineFlat)
         }
+        // Stable sort: entries sharing a page keep document order, so ties resolve to the last
+        // entry in document order — same winner the old linear scan picked.
+        outlineByPage = outlineFlat.enumerated()
+            .sorted { ($0.element.pageIndex, $0.offset) < ($1.element.pageIndex, $1.offset) }
+            .map(\.element)
         updateActiveOutlineItem()
         annotationService = AnnotationService(document: doc)
         let newReferenceIndex = ReferenceIndex(document: doc)
@@ -257,7 +269,7 @@ final class DocumentSession {
         referencePreview = nil
         referenceIndexPrepareTask?.cancel()
         // Build the bibliography index off the click path. A short breather lets the first page
-        // render land; prepare() itself yields between pages so it never holds the main actor.
+        // render land; prepare() runs the extraction off the main actor entirely.
         referenceIndexPrepareTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             if Task.isCancelled { return }
@@ -352,8 +364,8 @@ final class DocumentSession {
         openTask?.cancel()
         openTask = nil
         openGeneration += 1
-        scrollIdleTask?.cancel()
-        scrollIdleTask = nil
+        scrollIdleDebouncer.cancel()
+        scaleWarmupDebouncer.cancel()
         isScrollActive = false
         lastWarmupDirection = .both
         pageWarmup.reset()
@@ -367,6 +379,7 @@ final class DocumentSession {
         currentPageIndex = 0
         outlineRoot = nil
         outlineFlat = []
+        outlineByPage = []
         activeOutlineItemID = nil
         activeOutlineAncestorIDs = []
         annotationService = nil
@@ -640,11 +653,17 @@ final class DocumentSession {
     // MARK: - Figure / Table jump
 
     /// Parsed `Figure 3` / `Table 2` reference derived from the current selection text. nil when
-    /// the selection isn't shaped like a figure/table mention. Kept as a derived computed value
-    /// so we don't need to keep state in sync — it tracks `selection` automatically.
+    /// the selection isn't shaped like a figure/table mention. Derived from `selection` but cached
+    /// per selectionRevision — the floating panel asks for it on every refresh, including once per
+    /// streamed translation token, and the regex parse only depends on the selection text.
     var currentFigureReference: FigureReference? {
         guard let snapshot = selection else { return nil }
-        return FigureReference.parse(snapshot.rawText)
+        if let cached = figureReferenceCache, cached.revision == selectionRevision {
+            return cached.value
+        }
+        let value = FigureReference.parse(snapshot.rawText)
+        figureReferenceCache = (selectionRevision, value)
+        return value
     }
 
     /// Search the document for the figure/table caption matching the current selection and jump
@@ -771,7 +790,11 @@ final class DocumentSession {
     func handleScaleChanged(_ factor: CGFloat) {
         scaleFactor = factor
         scheduleSave()
-        schedulePageWarmup(direction: .both, delayMilliseconds: 250)
+        // PDFViewScaleChanged fires continuously during pinch / Cmd-scroll zoom; debounce here
+        // instead of re-creating the warmup service's DispatchWorkItem on every tick.
+        scaleWarmupDebouncer.call(after: .milliseconds(250)) { [weak self] in
+            self?.schedulePageWarmup(direction: .both, delayMilliseconds: 0)
+        }
     }
 
     func handleScrollActivity() {
@@ -787,10 +810,7 @@ final class DocumentSession {
         // momentum; cancelling would also kill the warmup DidEndLiveScroll just scheduled, which
         // is the one we most want to run. Warmup is on a background QoS queue and won't fight
         // PDFView's main-thread rendering.
-        scrollIdleTask?.cancel()
-        scrollIdleTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(220))
-            if Task.isCancelled { return }
+        scrollIdleDebouncer.call(after: .milliseconds(220)) { [weak self] in
             self?.handleScrollIdle()
         }
     }
@@ -874,27 +894,24 @@ final class DocumentSession {
         let snapshot = (page: currentPageIndex,
                         zoom: Double(scaleFactor),
                         mode: displayMode.dbValue)
-        saveTask?.cancel()
-        saveTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            if Task.isCancelled { return }
-            guard self != nil else { return }
-            do {
-                try await DocumentRepository.shared.updateReadingState(
-                    documentId: documentId,
-                    lastPage: snapshot.page,
-                    lastZoom: snapshot.zoom,
-                    displayMode: snapshot.mode
-                )
-            } catch {
-                self?.logger.error("Reading-state save failed: \(error.localizedDescription, privacy: .public)")
+        saveDebouncer.call(after: saveDebounce) { [weak self] in
+            Task {
+                do {
+                    try await DocumentRepository.shared.updateReadingState(
+                        documentId: documentId,
+                        lastPage: snapshot.page,
+                        lastZoom: snapshot.zoom,
+                        displayMode: snapshot.mode
+                    )
+                } catch {
+                    self?.logger.error("Reading-state save failed: \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
     }
 
     private func flushSave() {
-        saveTask?.cancel()
-        saveTask = nil
+        saveDebouncer.cancel()
         guard let documentId else { return }
         do {
             // Synchronous on purpose: flush runs on window close / app quit, where the write must
@@ -925,13 +942,21 @@ final class DocumentSession {
         }
     }
 
-    /// The active entry is the last one (in document order) whose page is at or before the
-    /// current page — i.e. the section the reader is currently inside.
+    /// The active entry is the one starting nearest at-or-before the current page — i.e. the
+    /// section the reader is currently inside. Binary search over the page-sorted copy, so a
+    /// page turn costs O(log n) instead of a scan of the whole outline.
     private func updateActiveOutlineItem() {
-        var best: FlatOutlineEntry?
-        for entry in outlineFlat where entry.pageIndex <= currentPageIndex {
-            best = entry
+        var low = 0
+        var high = outlineByPage.count
+        while low < high {
+            let mid = (low + high) / 2
+            if outlineByPage[mid].pageIndex <= currentPageIndex {
+                low = mid + 1
+            } else {
+                high = mid
+            }
         }
+        let best = low > 0 ? outlineByPage[low - 1] : nil
         let newID = best?.id
         if activeOutlineItemID != newID {
             activeOutlineItemID = newID
@@ -973,8 +998,11 @@ final class DocumentSession {
     private func warmupThumbnailSize() -> CGSize {
         let backingScale = pdfView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let viewWidth = pdfView?.bounds.width ?? 800
-        let effectiveScale = max(scaleFactor, 0.5)
-        let width = max(viewWidth * effectiveScale * backingScale, 600)
+        // Cap the effective zoom at 2x: beyond that a neighbouring page never enters the viewport
+        // whole, and an 8x warmup would rasterize a five-digit-pixel-wide bitmap (hundreds of MB)
+        // for near-zero prefetch value. The absolute width cap is a second safety net.
+        let effectiveScale = min(max(scaleFactor, 0.5), 2.0)
+        let width = min(max(viewWidth * effectiveScale * backingScale, 600), 4000)
 
         // Use the current page's aspect ratio when available so the size we pass roughly matches
         // the page PDFView is about to draw. PDFKit clamps to the page's own aspect anyway, but

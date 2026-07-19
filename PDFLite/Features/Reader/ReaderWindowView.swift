@@ -42,7 +42,9 @@ struct ReaderWindowView: View {
                 refPanel.dismiss()
             }
             .onChange(of: session.selectionRevision) { _, _ in refreshPanel() }
-            .onChange(of: session.translation.current) { _, _ in refreshPanel() }
+            .onChange(of: session.translation.current) { old, new in
+                handleTranslationChange(old: old, new: new)
+            }
             // Scrolling: hide the selection panel while the viewport moves, then re-present it
             // at the selection's new screen position once scrolling settles.
             .onChange(of: session.isViewportScrolling) { _, scrolling in
@@ -150,6 +152,27 @@ struct ReaderWindowView: View {
         refPanel.onClose = {
             session.dismissReferencePreview()
         }
+    }
+
+    /// Streaming ticks only grow `partial`; the panel's geometry inputs (anchor rect, size mode)
+    /// are unchanged. A full refreshPanel per token would re-derive the selection screen rect and
+    /// re-clamp/setFrame hundreds of times per translation — swap the hosted view instead, and in
+    /// compact mode (inspector open, partial not rendered) skip the update entirely.
+    private func handleTranslationChange(old: TranslationOutput?, new: TranslationOutput?) {
+        if let old, let new,
+           old.isStreaming, new.isStreaming,
+           old.sourceText == new.sourceText,
+           panelController.isVisible {
+            if !session.isTranslationInspectorVisible {
+                panelController.update(
+                    translation: session.translationMatchingCurrentSelection,
+                    figureReference: session.currentFigureReference,
+                    inspectorOpen: false
+                )
+            }
+            return
+        }
+        refreshPanel()
     }
 
     private func refreshPanel() {

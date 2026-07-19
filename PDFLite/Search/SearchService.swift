@@ -10,6 +10,9 @@ final class SearchService {
     private(set) var currentIndex: Int = 0
     private(set) var isSearching: Bool = false
     private(set) var navigationRevision: Int = 0
+    /// Bumped whenever `results` itself changes (new search, batch flush, clear). The bridge
+    /// layer uses it to skip re-tinting hundreds of selections on unrelated updateNSView passes.
+    private(set) var resultsRevision: Int = 0
 
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     @ObservationIgnored private weak var findingDocument: PDFDocument?
@@ -50,6 +53,7 @@ final class SearchService {
         pendingMatches = []
         currentIndex = 0
         navigationRevision += 1
+        resultsRevision += 1
         findingDocument = document
 
         let center = NotificationCenter.default
@@ -97,6 +101,7 @@ final class SearchService {
         results = []
         currentIndex = 0
         navigationRevision += 1
+        resultsRevision += 1
     }
 
     func currentSelection() -> PDFSelection? {
@@ -120,6 +125,7 @@ final class SearchService {
         let isFirstFlush = results.isEmpty
         results.append(contentsOf: pendingMatches)
         pendingMatches = []
+        resultsRevision += 1
         if isFirstFlush {
             currentIndex = 0
             navigationRevision += 1

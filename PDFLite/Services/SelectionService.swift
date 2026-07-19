@@ -94,8 +94,11 @@ enum SelectionService {
         let paragraphGapThreshold = max(medianHeight * 0.6, 4)
 
         // Assemble rawText with paragraph awareness; collect per-page rects as we go.
+        // Rects accumulate in-place per page — rebuilding an ever-growing array per line would
+        // make a full-page selection quadratic in its line count.
         var rawTextLines: [String] = []
-        var pageBuckets: [Int: PageSelection] = [:]
+        var pageRects: [Int: [CGRect]] = [:]
+        var pageForIndex: [Int: PDFPage] = [:]
         var pageOrder: [Int] = []
         var prev: LineEntry?
 
@@ -116,20 +119,11 @@ enum SelectionService {
             }
 
             // Track per-page rects.
-            if pageBuckets[entry.pageIndex] == nil {
-                pageBuckets[entry.pageIndex] = PageSelection(
-                    pageIndex: entry.pageIndex,
-                    page: entry.page,
-                    lineRects: [entry.rect]
-                )
+            if pageRects[entry.pageIndex] == nil {
                 pageOrder.append(entry.pageIndex)
-            } else if let existing = pageBuckets[entry.pageIndex] {
-                pageBuckets[entry.pageIndex] = PageSelection(
-                    pageIndex: existing.pageIndex,
-                    page: existing.page,
-                    lineRects: existing.lineRects + [entry.rect]
-                )
+                pageForIndex[entry.pageIndex] = entry.page
             }
+            pageRects[entry.pageIndex, default: []].append(entry.rect)
 
             prev = entry
         }
@@ -137,7 +131,10 @@ enum SelectionService {
         let rawText = rawTextLines.joined().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else { return nil }
 
-        let pages = pageOrder.compactMap { pageBuckets[$0] }
+        let pages: [PageSelection] = pageOrder.compactMap { index in
+            guard let page = pageForIndex[index], let rects = pageRects[index] else { return nil }
+            return PageSelection(pageIndex: index, page: page, lineRects: rects)
+        }
         guard !pages.isEmpty else { return nil }
 
         return SelectionSnapshot(pages: pages, rawText: rawText)

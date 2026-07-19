@@ -2,29 +2,31 @@ import Foundation
 import GRDB
 import os.log
 
-/// Single shared GRDB DatabaseQueue. Owns schema migrations.
-/// Not main-actor-bound: DatabaseQueue serializes access internally, and repositories call it
-/// through GRDB's async API so SQLite I/O never blocks the main thread.
+/// Single shared GRDB writer. Owns schema migrations.
+/// Not main-actor-bound: GRDB serializes writes internally, and repositories call it through
+/// the async API so SQLite I/O never blocks the main thread. The on-disk store is a
+/// DatabasePool (WAL mode): reads run concurrently with each other *and* with writes, so a
+/// debounced reading-state write can't stall an annotation/translation lookup.
 final class Database: Sendable {
     static let shared = Database()
 
     private let logger = Logger(subsystem: "com.pdflite.app", category: "Database")
-    let writer: DatabaseQueue
+    let writer: any DatabaseWriter
 
     private init() {
         let url = AppPaths.sqliteURL
         var config = Configuration()
         config.label = "pdflite.reader"
 
-        let candidate: DatabaseQueue
+        let candidate: any DatabaseWriter
         do {
-            let queue = try DatabaseQueue(path: url.path, configuration: config)
-            try Self.migrator.migrate(queue)
-            candidate = queue
+            let pool = try DatabasePool(path: url.path, configuration: config)
+            try Self.migrator.migrate(pool)
+            candidate = pool
         } catch {
             // Per §8: a broken DB shouldn't block reading — but we still need *some* writer.
-            // Fall back to an in-memory queue so the app can run; persistence operations will
-            // surface their own errors back to the user where appropriate.
+            // Fall back to an in-memory queue so the app can run (DatabasePool requires a file);
+            // persistence operations will surface their own errors back to the user.
             Logger(subsystem: "com.pdflite.app", category: "Database")
                 .error("Failed to open SQLite at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public). Falling back to in-memory.")
             // swiftlint:disable:next force_try
@@ -150,6 +152,15 @@ final class Database: Sendable {
             try db.create(index: "idx_annotations_group_id",
                           on: "annotations",
                           columns: ["group_id"])
+        }
+
+        m.registerMigration("v6_documents_file_url_index") { db in
+            // find(byURL:) runs on every document open (fast-path reading-state restore) and
+            // filters by file_url + orders by updated_at — give it an index instead of a
+            // full-table scan.
+            try db.create(index: "idx_documents_file_url",
+                          on: "documents",
+                          columns: ["file_url", "updated_at"])
         }
 
         return m

@@ -80,27 +80,42 @@ struct PDFKitRepresentable: NSViewRepresentable {
             }
         }
 
-        // Search highlights — driven by SearchService state.
+        // Search highlights — driven by SearchService state. updateNSView runs on every observed
+        // session change (page turns, zoom ticks, streaming translation), so gate the recolor on
+        // the search revisions: with hundreds of matches, re-tinting them all on unrelated
+        // updates is pure repeat work.
         let highlighted = session.search.results
         if !highlighted.isEmpty {
-            for sel in highlighted { sel.color = .yellow }
-            if context.coordinator.lastAppliedSearchRevision != session.search.navigationRevision,
-               let current = session.search.currentSelection() {
-                context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
-                current.color = .orange
-                view.setCurrentSelection(current, animate: false)
-                // Route through session.goToSelection so the pre-jump location goes onto the
-                // back stack — Cmd-[ then returns to where the user was before searching.
-                session.goToSelection(current)
+            let resultsChanged =
+                context.coordinator.lastAppliedResultsRevision != session.search.resultsRevision
+            let navChanged =
+                context.coordinator.lastAppliedSearchRevision != session.search.navigationRevision
+            if resultsChanged || navChanged {
+                context.coordinator.lastAppliedResultsRevision = session.search.resultsRevision
+                // Re-yellow everything: on navigation this also resets the previous current
+                // match from orange back to yellow.
+                for sel in highlighted { sel.color = .yellow }
+                if navChanged, let current = session.search.currentSelection() {
+                    context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
+                    current.color = .orange
+                    view.setCurrentSelection(current, animate: false)
+                    // Route through session.goToSelection so the pre-jump location goes onto the
+                    // back stack — Cmd-[ then returns to where the user was before searching.
+                    session.goToSelection(current)
+                }
+                view.highlightedSelections = highlighted
             }
-            view.highlightedSelections = highlighted
         } else {
             context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
-            view.highlightedSelections = nil
+            context.coordinator.lastAppliedResultsRevision = session.search.resultsRevision
+            if view.highlightedSelections != nil {
+                view.highlightedSelections = nil
+            }
         }
     }
 
     static func dismantleNSView(_ view: ReaderPDFView, coordinator: Coordinator) {
+        coordinator.cancelPendingSelectionSnapshot()
         coordinator.detachScrollObserver()
         NotificationCenter.default.removeObserver(coordinator)
     }
@@ -110,6 +125,8 @@ struct PDFKitRepresentable: NSViewRepresentable {
         weak var session: DocumentSession?
         weak var view: ReaderPDFView?
         var lastAppliedSearchRevision: Int = -1
+        var lastAppliedResultsRevision: Int = -1
+        private let selectionDebouncer = TrailingDebouncer()
         private weak var observedClipView: NSClipView?
         private weak var observedScrollView: NSScrollView?
         private var lastScrollOrigin: CGPoint?
@@ -200,8 +217,18 @@ struct PDFKitRepresentable: NSViewRepresentable {
         }
 
         @objc func selectionChanged(_ notification: Notification) {
-            guard let view, let session else { return }
-            session.handleSelectionChanged(SelectionService.snapshot(from: view))
+            // PDFKit posts this on every tick of a drag-selection. Building a full snapshot
+            // (selectionsByLine + per-line text extraction) each time is wasted main-thread work
+            // for intermediate states nobody sees — debounce to the trailing edge and snapshot
+            // once, when the selection settles. Downstream auto-actions add their own 350ms.
+            selectionDebouncer.call(after: .milliseconds(80)) { [weak self] in
+                guard let self, let view = self.view, let session = self.session else { return }
+                session.handleSelectionChanged(SelectionService.snapshot(from: view))
+            }
+        }
+
+        func cancelPendingSelectionSnapshot() {
+            selectionDebouncer.cancel()
         }
 
         func handleLinkClick(_ context: LinkClickContext) -> LinkClickDecision {

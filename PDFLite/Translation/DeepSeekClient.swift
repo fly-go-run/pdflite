@@ -172,6 +172,7 @@ struct DeepSeekClient {
 
     private static func collectBody(from stream: URLSession.AsyncBytes, limit: Int) async -> String {
         var data = Data()
+        data.reserveCapacity(limit)
         do {
             for try await byte in stream {
                 if data.count >= limit { break }

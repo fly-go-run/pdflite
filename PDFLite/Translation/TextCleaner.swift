@@ -33,10 +33,8 @@ enum TextCleaner {
     /// the character before the hyphen is a Latin letter (so we don't eat dashes in formulas /
     /// number ranges like `12-\n34`).
     private static func mergeHyphenatedLineBreaks(_ text: String) -> String {
-        let pattern = #"([A-Za-z])-\n[ \t]*"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "$1")
+        return hyphenBreakPattern.stringByReplacingMatches(in: text, range: range, withTemplate: "$1")
     }
 
     /// Collapse single newlines based on neighbouring characters.
@@ -78,11 +76,16 @@ enum TextCleaner {
     }
 
     private static func normaliseBlankLines(_ text: String) -> String {
-        let pattern = #"\n[ \t]*\n(?:[ \t]*\n)*"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "\n\n")
+        return blankLinesPattern.stringByReplacingMatches(in: text, range: range, withTemplate: "\n\n")
     }
+
+    // Compiled once, like every other hot-path regex in the project. Force-try is fine:
+    // the patterns are constant and validated the first time they're used.
+    // swiftlint:disable:next force_try
+    private static let hyphenBreakPattern = try! NSRegularExpression(pattern: #"([A-Za-z])-\n[ \t]*"#)
+    // swiftlint:disable:next force_try
+    private static let blankLinesPattern = try! NSRegularExpression(pattern: #"\n[ \t]*\n(?:[ \t]*\n)*"#)
 
     // MARK: - Unicode helpers
 

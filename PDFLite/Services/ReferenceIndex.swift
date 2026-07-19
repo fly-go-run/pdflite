@@ -7,6 +7,13 @@ struct ReferenceEntry: Sendable, Equatable {
     let pageIndex: Int
 }
 
+/// Hands the live PDFDocument to the background build. @unchecked Sendable is sound for the same
+/// reason as ParsedDocument / PDFPageWarmupService: the build only *reads* (page.string), which
+/// PDFKit tolerates off the main thread, and the box never outlives the build.
+private struct ReferenceDocumentBox: @unchecked Sendable {
+    let document: PDFDocument
+}
+
 /// Per-document, in-memory index of numeric bibliography entries (`[12]` style). Built off the
 /// click path by `prepare()` so that lookups during a mouseDown stay non-blocking — if the index
 /// isn't ready yet, `entry(forNumber:)` returns nil and the caller falls back to plain navigation.
@@ -34,12 +41,17 @@ final class ReferenceIndex {
     }
 
     /// Build the index in the background. Idempotent: a second call while preparing or after
-    /// becoming ready is a no-op. Yields between pages so we don't hold the main actor for a
-    /// long bibliography.
+    /// becoming ready is a no-op. The heavy lifting (per-page text extraction + regex matching)
+    /// runs off the main actor; only the finished dictionary crosses back.
     func prepare() async {
         guard state == .idle else { return }
         state = .preparing
-        entries = await buildIndex()
+        guard let document, document.pageCount > 0 else {
+            state = .ready
+            return
+        }
+        let box = ReferenceDocumentBox(document: document)
+        entries = await Self.buildIndex(box: box)
         state = .ready
     }
 
@@ -48,10 +60,10 @@ final class ReferenceIndex {
         state = .idle
     }
 
-    // MARK: - Build
+    // MARK: - Build (runs on the global executor, off the main actor)
 
-    private func buildIndex() async -> [Int: ReferenceEntry] {
-        guard let document, document.pageCount > 0 else { return [:] }
+    private nonisolated static func buildIndex(box: ReferenceDocumentBox) async -> [Int: ReferenceEntry] {
+        let document = box.document
         guard let header = locateHeader(in: document) else { return [:] }
 
         var combined = ""
@@ -59,16 +71,20 @@ final class ReferenceIndex {
         let trailing = (header.pageString as NSString).substring(from: header.headerRange.upperBound)
         pageOffsets.append((0, header.pageIndex))
         combined.append(trailing)
+        // Running UTF-16 offset, accumulated per page — recounting `combined` each iteration
+        // would make this loop quadratic in the size of the back matter.
+        var runningOffset = (trailing as NSString).length
         for index in (header.pageIndex + 1)..<document.pageCount {
-            await Task.yield()
+            if Task.isCancelled { return [:] }
             guard let pageString = document.page(at: index)?.string,
                   !pageString.isEmpty else { continue }
-            pageOffsets.append((combined.utf16.count + 1, index))
+            pageOffsets.append((runningOffset + 1, index))
             combined.append("\n")
             combined.append(pageString)
+            runningOffset += 1 + (pageString as NSString).length
         }
 
-        await Task.yield()
+        if Task.isCancelled { return [:] }
         return matchEntries(in: combined, pageOffsets: pageOffsets, fallbackPage: header.pageIndex)
     }
 
@@ -78,11 +94,12 @@ final class ReferenceIndex {
         let headerRange: NSRange
     }
 
-    private func locateHeader(in document: PDFDocument) -> HeaderHit? {
+    private nonisolated static func locateHeader(in document: PDFDocument) -> HeaderHit? {
         // Scan from the last page backward — academic PDFs put References in the back matter, and
         // a survey paper's body might mention "References" in passing. The first match from the
         // end is almost always the real bibliography.
         for index in stride(from: document.pageCount - 1, through: 0, by: -1) {
+            if Task.isCancelled { return nil }
             guard let pageString = document.page(at: index)?.string,
                   !pageString.isEmpty else { continue }
             let range = NSRange(location: 0, length: (pageString as NSString).length)
@@ -93,7 +110,7 @@ final class ReferenceIndex {
         return nil
     }
 
-    private func matchEntries(
+    private nonisolated static func matchEntries(
         in combined: String,
         pageOffsets: [(offset: Int, page: Int)],
         fallbackPage: Int
@@ -128,7 +145,7 @@ final class ReferenceIndex {
         return result
     }
 
-    private func cleanEntryBody(_ raw: String) -> String {
+    private nonisolated static func cleanEntryBody(_ raw: String) -> String {
         var s = raw.replacingOccurrences(of: "-\n", with: "")
         s = s.replacingOccurrences(of: "\r\n", with: "\n")
         s = s.replacingOccurrences(of: "\n", with: " ")
@@ -137,7 +154,7 @@ final class ReferenceIndex {
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func page(forOffset offset: Int, in offsets: [(offset: Int, page: Int)]) -> Int? {
+    private nonisolated static func page(forOffset offset: Int, in offsets: [(offset: Int, page: Int)]) -> Int? {
         var match: Int?
         for entry in offsets {
             if entry.offset <= offset { match = entry.page } else { break }
@@ -146,14 +163,14 @@ final class ReferenceIndex {
     }
 
     // Compiled once. Force-try is fine: these patterns are constant and validated at init time.
-    private static let headerPattern: NSRegularExpression = {
+    private nonisolated static let headerPattern: NSRegularExpression = {
         // swiftlint:disable:next force_try
         try! NSRegularExpression(
             pattern: #"(?im)^\s*(References|REFERENCES|Bibliography|BIBLIOGRAPHY|参考文献)\s*$"#
         )
     }()
 
-    private static let entryPattern: NSRegularExpression = {
+    private nonisolated static let entryPattern: NSRegularExpression = {
         // swiftlint:disable:next force_try
         try! NSRegularExpression(
             pattern: #"(?m)^\s*(?:\[(\d{1,3})\]|(\d{1,3})\.)\s+"#

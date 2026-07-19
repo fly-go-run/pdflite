@@ -33,12 +33,17 @@ final class TranslationService {
     /// Last request, kept so an error state can offer "重试" even after the selection is gone.
     @ObservationIgnored private var lastRequestSnapshot: SelectionSnapshot?
     @ObservationIgnored private var lastRequestDocumentId: Int64?
+    /// Token from the block-based addObserver. Must be kept and removed explicitly —
+    /// removeObserver(self) can't unregister block observers, so without this every closed
+    /// window would leave a dead observer behind, all re-run on each config change.
+    /// nonisolated(unsafe) is sound: written once in init, read once in deinit.
+    @ObservationIgnored private nonisolated(unsafe) var configObserverToken: (any NSObjectProtocol)?
 
     init(session: URLSession = .shared) {
         self.session = session
         // Settings UI posts this after rewriting ~/.config/pdflite/config.json. Drop the cache so
         // the next translate() call picks up the new key/endpoint/model without restarting the app.
-        NotificationCenter.default.addObserver(
+        configObserverToken = NotificationCenter.default.addObserver(
             forName: ConfigLoader.configChangedNotification,
             object: nil,
             queue: .main
@@ -50,7 +55,9 @@ final class TranslationService {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        if let configObserverToken {
+            NotificationCenter.default.removeObserver(configObserverToken)
+        }
     }
 
     func reset() {

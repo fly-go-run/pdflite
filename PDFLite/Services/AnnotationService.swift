@@ -12,6 +12,9 @@ final class AnnotationService {
     private static let userNamePrefix = "pdflite:"
 
     private weak var document: PDFDocument?
+    /// Pages each highlight group touches, recorded at restore/create time so deleting a group
+    /// only scans its own pages instead of every annotation in the document.
+    private var groupPageIndexes: [String: Set<Int>] = [:]
 
     init(document: PDFDocument) {
         self.document = document
@@ -34,6 +37,7 @@ final class AnnotationService {
                 let annotation = makeHighlight(bounds: rect, hex: record.color, groupId: record.groupId)
                 page.addAnnotation(annotation)
             }
+            groupPageIndexes[record.groupId, default: []].insert(record.pageIndex)
         }
     }
 
@@ -56,6 +60,7 @@ final class AnnotationService {
                 )
                 pageSelection.page.addAnnotation(annotation)
             }
+            groupPageIndexes[groupId, default: []].insert(pageSelection.pageIndex)
 
             let boundsJSON = (try? AnnotationRectCoder.encode(pageSelection.lineRects)) ?? "[]"
             // Record's `selected_text` only carries this page's portion of the original text. The
@@ -81,11 +86,15 @@ final class AnnotationService {
         return records
     }
 
-    /// Remove every PDFAnnotation belonging to `groupId` from the document.
+    /// Remove every PDFAnnotation belonging to `groupId` from the document. Scans only the pages
+    /// recorded for the group; falls back to a full-document sweep for unknown groups.
     func removeRuntimeAnnotations(groupId: String) {
         guard let document else { return }
-        for pageIndex in 0..<document.pageCount {
-            guard let page = document.page(at: pageIndex) else { continue }
+        let pages = groupPageIndexes.removeValue(forKey: groupId).map(Array.init)
+            ?? Array(0..<document.pageCount)
+        for pageIndex in pages {
+            guard pageIndex >= 0, pageIndex < document.pageCount,
+                  let page = document.page(at: pageIndex) else { continue }
             for annotation in page.annotations where Self.groupId(from: annotation) == groupId {
                 page.removeAnnotation(annotation)
             }
