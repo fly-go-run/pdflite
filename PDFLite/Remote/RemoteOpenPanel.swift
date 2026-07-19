@@ -113,6 +113,19 @@ final class RemoteOpenPanelController: NSObject, NSWindowDelegate {
     let model = RemoteOpenModel()
     private var panel: NSPanel?
 
+    /// `pdflite://open?url=<encoded>` — sent by the browser extension / bookmarklet, delivered
+    /// through ReaderWindowView.onOpenURL. Reuses the whole "从 URL 打开" pipeline: dedup,
+    /// download with progress panel, arXiv title fetch. No-op while a download is in flight.
+    static func handleDeepLink(_ url: URL) {
+        guard url.scheme?.lowercased() == "pdflite",
+              url.host?.lowercased() == "open",
+              let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                  .queryItems?.first(where: { $0.name == "url" })?.value,
+              !target.isEmpty
+        else { return }
+        shared.show(prefill: target, autoStart: true)
+    }
+
     /// Shows the panel. With no prefill, a parseable URL sitting in the clipboard is offered as
     /// the initial input (selected, so typing replaces it). `autoStart` is used by link drops,
     /// where showing the panel and immediately downloading matches the user's intent.
@@ -132,6 +145,8 @@ final class RemoteOpenPanelController: NSObject, NSWindowDelegate {
         if !panel.isVisible {
             panel.center()
         }
+        // Deep links arrive while the browser is frontmost — bring the panel to the user.
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
 
         if autoStart, !model.isDownloading {

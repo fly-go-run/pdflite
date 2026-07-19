@@ -27,11 +27,13 @@ struct PDFLiteApp: App {
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1280, height: 1200)
         // File-open events route exclusively through AppDelegate → DocumentOpener (letting
-        // SwiftUI handle them spawns a ghost empty window per odoc event). The one external
-        // event this group accepts is our private pdflite:// scheme — the deterministic
-        // "create a reader window" lever DocumentOpener pulls when no window exists (cold
-        // launch with a document can race scene setup, and SwiftUI then skips the default
-        // window entirely).
+        // SwiftUI handle them spawns a ghost empty window per odoc event). The external events
+        // this group accepts are our private pdflite:// scheme: pdflite://reader is the
+        // deterministic "create a reader window" lever DocumentOpener pulls when no window
+        // exists, and pdflite://open?url=… deep links are claimed by existing windows via the
+        // view-level handlesExternalEvents in ReaderWindowView + routed through onOpenURL.
+        // Narrowing this to just pdflite://reader does NOT hand deep links to AppDelegate —
+        // SwiftUI swallows unmatched pdflite:// events entirely (verified) — it just drops them.
         .handlesExternalEvents(matching: ["pdflite://"])
         .commands {
             AppCommands(

@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "PDFLite Opener",
+  "version": "1.0",
+  "description": "把当前页面或链接发送给 PDFLite 打开(arXiv 论文一键进阅读器)",
+  "action": {
+    "default_title": "用 PDFLite 打开当前页面"
+  },
+  "permissions": ["contextMenus", "activeTab"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

@@ -18,6 +18,16 @@ struct ReaderWindowView: View {
             .toolbar { toolbarContent }
             .focusedSceneValue(\.documentSession, session)
             .background(WindowFocusBridge(session: session, title: session.title))
+            // Deep links (pdflite://open?url=…) are claimed at the view level so an EXISTING
+            // window handles them — without this, every browser-extension click would conjure
+            // a fresh ghost window (SwiftUI swallows the URL event entirely; it never reaches
+            // AppDelegate.application(_:open:), so scene/view matching is the only routing).
+            // pdflite://reader deliberately stays unclaimed: the bootstrap lever must keep
+            // creating windows.
+            .handlesExternalEvents(preferring: ["pdflite://open"], allowing: ["pdflite://open"])
+            .onOpenURL { url in
+                RemoteOpenPanelController.handleDeepLink(url)
+            }
             .onAppear {
                 // spawnWindow must be wired before register(): register may need to spawn
                 // follow-up windows when multiple documents queued before any window existed.

@@ -64,6 +64,7 @@ final class AppFocusState {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let logger = Logger(subsystem: "com.pdflite.app", category: "AppDelegate")
     private var activeSpaceObserver: NSObjectProtocol?
     private var fullScreenObservers: [NSObjectProtocol] = []
 
@@ -131,9 +132,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        // pdflite:// bootstrap URLs are handled by the WindowGroup scene; only route real files.
-        for url in urls where url.isFileURL && url.pathExtension.lowercased() == "pdf" {
-            DocumentOpener.requestOpen(url: url)
+        logger.info("application(open:) received \(urls.map(\.absoluteString).joined(separator: " "), privacy: .public)")
+        for url in urls {
+            if url.isFileURL {
+                if url.pathExtension.lowercased() == "pdf" {
+                    DocumentOpener.requestOpen(url: url)
+                }
+            } else if url.scheme?.lowercased() == "pdflite" {
+                // Normally SwiftUI's URL-event handler consumes pdflite:// URLs before this
+                // method ever runs (deep links arrive via ReaderWindowView.onOpenURL). Kept as
+                // a harmless fallback: handleDeepLink is idempotent while a download runs.
+                RemoteOpenPanelController.handleDeepLink(url)
+            }
         }
     }
 
