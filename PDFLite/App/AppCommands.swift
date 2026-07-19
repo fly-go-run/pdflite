@@ -26,6 +26,11 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("o", modifiers: .command)
 
+            Button("从 URL 打开…") {
+                RemoteOpenPanelController.shared.show()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+
             Menu("最近打开") {
                 ForEach(recentFiles.recentFiles) { recent in
                     Button(recent.displayName) {

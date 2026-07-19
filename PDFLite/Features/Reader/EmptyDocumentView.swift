@@ -23,7 +23,7 @@ struct EmptyDocumentView: View {
             NSColorBackground(color: .windowBackgroundColor)
                 .ignoresSafeArea()
         }
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+        .onDrop(of: [.fileURL, .url], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
         }
         .overlay {
@@ -46,12 +46,18 @@ struct EmptyDocumentView: View {
                 .foregroundStyle(.secondary)
             Text("没有打开的 PDF")
                 .font(.title2)
-            Button("打开 PDF…") {
-                session.presentOpenPanel()
+            HStack(spacing: 12) {
+                Button("打开 PDF…") {
+                    session.presentOpenPanel()
+                }
+                .keyboardShortcut("o", modifiers: .command)
+                .controlSize(.large)
+                Button("从 URL 打开…") {
+                    RemoteOpenPanelController.shared.show()
+                }
+                .controlSize(.large)
             }
-            .keyboardShortcut("o", modifiers: .command)
-            .controlSize(.large)
-            Text("或将 PDF 拖到此处")
+            Text("或将 PDF 文件 / arXiv 链接拖到此处")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
@@ -86,16 +92,34 @@ struct EmptyDocumentView: View {
         // Multi-file drop: the first PDF fills this (empty) window, the rest open in their own
         // windows via DocumentOpener.
         for provider in providers {
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                guard let data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil),
-                      url.pathExtension.lowercased() == "pdf"
-                else { return }
-                DispatchQueue.main.async {
-                    if session.canAcceptOpen {
-                        session.openDocument(url: url)
-                    } else {
-                        DocumentOpener.requestOpen(url: url)
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                    guard let data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil),
+                          url.pathExtension.lowercased() == "pdf"
+                    else { return }
+                    DispatchQueue.main.async {
+                        if session.canAcceptOpen {
+                            session.openDocument(url: url)
+                        } else {
+                            DocumentOpener.requestOpen(url: url)
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                // A link dragged out of a browser. Dropping it is an explicit "open this", so
+                // the URL panel comes up already downloading.
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.url.identifier) { data, _ in
+                    guard let data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil),
+                          let scheme = url.scheme?.lowercased(),
+                          scheme == "http" || scheme == "https"
+                    else { return }
+                    DispatchQueue.main.async {
+                        RemoteOpenPanelController.shared.show(
+                            prefill: url.absoluteString,
+                            autoStart: true
+                        )
                     }
                 }
             }

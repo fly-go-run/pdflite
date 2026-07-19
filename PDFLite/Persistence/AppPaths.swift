@@ -27,6 +27,18 @@ enum AppPaths {
         return dir
     }
 
+    /// `~/Library/Application Support/PDFLite/library/` — PDFs downloaded from URLs (arXiv
+    /// papers etc.). These are permanent library copies, not a cache: the bookshelf, reading
+    /// state and annotations all reference them by this stable path.
+    static var remoteLibraryDirectory: URL {
+        let dir = supportDirectory.appendingPathComponent("library", isDirectory: true)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
     /// `~/.config/pdflite/config.json` — DeepSeek key & similar runtime config (Phase 3).
     static var configFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
