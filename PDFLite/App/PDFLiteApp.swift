@@ -24,7 +24,11 @@ struct PDFLiteApp: App {
                 .frame(minWidth: 720, minHeight: 480)
                 .preferredColorScheme(colorScheme)
         }
-        .windowToolbarStyle(.unified)
+        // unifiedCompact: toolbar shares one ~38pt row with the (leading) title instead of the
+        // ~52pt unified row — the single biggest chrome saving available without giving up the
+        // native toolbar. The title must stay visible: hiding it collapses the trailing
+        // toolbar cluster to the leading edge (see note in WindowFocusBridge.Coordinator).
+        .windowToolbarStyle(.unifiedCompact)
         .defaultSize(width: 1280, height: 1200)
         // File-open events route exclusively through AppDelegate → DocumentOpener (letting
         // SwiftUI handle them spawns a ghost empty window per odoc event). The external events

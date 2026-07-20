@@ -17,7 +17,9 @@ struct ReaderWindowView: View {
         splitView
             .toolbar { toolbarContent }
             .focusedSceneValue(\.documentSession, session)
-            .background(WindowFocusBridge(session: session, title: session.title))
+            .background(WindowFocusBridge(session: session,
+                                          title: session.title,
+                                          fileURL: session.fileURL))
             // Deep links (pdflite://open?url=…) are claimed at the view level so an EXISTING
             // window handles them — without this, every browser-extension click would conjure
             // a fresh ghost window (SwiftUI swallows the URL event entirely; it never reaches
@@ -219,6 +221,9 @@ private struct WindowFocusBridge: NSViewRepresentable {
     /// title binding snapshots at window creation: a Finder-launched cold start builds the
     /// window with an empty session (title "PDFLite") and never re-binds when the doc loads.
     let title: String
+    /// Backs the title-bar proxy icon (⌘-click path menu, draggable). WindowGroup scenes
+    /// don't manage representedURL, so nothing fights this the way the title gets fought.
+    let fileURL: URL?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(session: session)
@@ -237,6 +242,9 @@ private struct WindowFocusBridge: NSViewRepresentable {
         context.coordinator.attach(to: view.window)
         if let window = view.window, window.title != title {
             window.title = title
+        }
+        if let window = view.window, window.representedURL != fileURL {
+            window.representedURL = fileURL
         }
     }
 
@@ -260,6 +268,7 @@ private struct WindowFocusBridge: NSViewRepresentable {
         private weak var window: NSWindow?
         private var tokens: [NSObjectProtocol] = []
         private var titleObservation: NSKeyValueObservation?
+        private var toolbarSwapObservation: NSKeyValueObservation?
 
         init(session: DocumentSession) {
             self.session = session
@@ -278,10 +287,13 @@ private struct WindowFocusBridge: NSViewRepresentable {
             // 1. enlarge the window to a comfortable reading size, 2. join the reader tab group.
             // Both exactly once, at first attach, so user resizes and dragged-out tabs aren't
             // fought afterwards.
-            DispatchQueue.main.async { [weak newWindow] in
+            DispatchQueue.main.async { [weak self, weak newWindow] in
                 guard let newWindow else { return }
                 Self.applyDefaultReadingSize(to: newWindow)
                 Self.mergeIntoReaderTabGroup(newWindow)
+                // A tab spawned into an already-fullscreen group attaches with .fullScreen
+                // set and never receives willEnterFullScreen.
+                self?.syncToolbarVisibility()
             }
 
             // SwiftUI occasionally re-asserts the scene's static title ("PDFLite") on layout
@@ -297,9 +309,45 @@ private struct WindowFocusBridge: NSViewRepresentable {
                 }
             }
 
-            // didBecomeKey is enough — didBecomeMain almost always rides along, and app-level
-            // didBecomeActive is already handled by AppDelegate.
+            // SwiftUI occasionally swaps the window's NSToolbar instance; a fresh toolbar
+            // arrives visible, which would resurrect the toolbar row mid-fullscreen.
+            toolbarSwapObservation = newWindow.observe(\.toolbar) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    self?.syncToolbarVisibility()
+                }
+            }
+
+            // Fullscreen hides the toolbar row so only the native tab bar strip remains
+            // (Terminal-style). Measured 2026-07: the autoHideToolbar presentation option
+            // hides the ENTIRE titlebar strip including the tab bar, so toggling
+            // toolbar.isVisible is the only mechanism that keeps tabs persistent. will*
+            // notifications make the transition clean; didEnter re-asserts after it.
             let center = NotificationCenter.default
+            tokens.append(center.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification,
+                object: newWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.syncToolbarVisibility(fullScreen: true) }
+            })
+            tokens.append(center.addObserver(
+                forName: NSWindow.didEnterFullScreenNotification,
+                object: newWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.syncToolbarVisibility(fullScreen: true) }
+            })
+            tokens.append(center.addObserver(
+                forName: NSWindow.willExitFullScreenNotification,
+                object: newWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.syncToolbarVisibility(fullScreen: false) }
+            })
+
+            // didBecomeKey is enough — didBecomeMain almost always rides along, and app-level
+            // didBecomeActive is already handled by AppDelegate. Doubles as the self-heal pass
+            // for toolbar state on tabs that missed a fullscreen notification while unselected.
             tokens.append(center.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,
                 object: newWindow,
@@ -307,6 +355,7 @@ private struct WindowFocusBridge: NSViewRepresentable {
             ) { [weak self] _ in
                 Task { @MainActor in
                     self?.activateSession(restoreKeyboardFocus: true)
+                    self?.syncToolbarVisibility()
                 }
             })
 
@@ -323,7 +372,25 @@ private struct WindowFocusBridge: NSViewRepresentable {
             tokens = []
             titleObservation?.invalidate()
             titleObservation = nil
+            toolbarSwapObservation?.invalidate()
+            toolbarSwapObservation = nil
             window = nil
+        }
+
+        // NOTE: do NOT set titleVisibility = .hidden to dedupe the title against the tab bar.
+        // Measured 2026-07: in unifiedCompact the flexible space pinning .primaryAction items
+        // to the trailing edge rides on the title item — hiding the title collapses the whole
+        // trailing cluster to the leading edge (picker at x≈265-380 in a 1348pt window).
+
+        /// Fullscreen: toolbar row hidden, native tab bar kept (Terminal-style). Windowed:
+        /// toolbar always shown. Pass `fullScreen:` from will* notifications, where styleMask
+        /// still reflects the state being left rather than the one being entered.
+        private func syncToolbarVisibility(fullScreen: Bool? = nil) {
+            guard let window else { return }
+            let isFullScreen = fullScreen ?? window.styleMask.contains(.fullScreen)
+            if let toolbar = window.toolbar, toolbar.isVisible == isFullScreen {
+                toolbar.isVisible = !isFullScreen
+            }
         }
 
         private func activateSession(restoreKeyboardFocus: Bool) {

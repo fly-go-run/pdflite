@@ -86,7 +86,30 @@ enum RemoteDocumentURL {
             return .arxiv(id: id)
         }
 
-        return .web(url)
+        return .web(normalizedWebURL(url))
+    }
+
+    /// Site-specific rewrites for URLs that are an HTML wrapper around the actual PDF bytes.
+    /// Applied before download AND before the dedup token is computed, so wrapper and direct
+    /// spellings of the same file collapse to one library entry.
+    private static func normalizedWebURL(_ url: URL) -> URL {
+        guard let host = url.host?.lowercased() else { return url }
+
+        // GitHub blob pages (github.com/{owner}/{repo}/blob/{ref}/{path}) serve an HTML viewer;
+        // the file itself lives on raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}.
+        // The /raw/ spelling is normalized the same way (it 302s there anyway).
+        if host == "github.com" || host == "www.github.com" {
+            let parts = url.path.split(separator: "/").map(String.init)
+            if parts.count >= 5, parts[2] == "blob" || parts[2] == "raw" {
+                var comps = URLComponents()
+                comps.scheme = "https"
+                comps.host = "raw.githubusercontent.com"
+                comps.path = "/" + ([parts[0], parts[1]] + parts[3...]).joined(separator: "/")
+                if let raw = comps.url { return raw }
+            }
+        }
+
+        return url
     }
 
     private static func parseBareArxivID(_ text: String) -> String? {

@@ -17,9 +17,13 @@ App 收到后走完整的「从 URL 打开」流水线:已下载过的秒开本�
 
 用法:
 
-- **工具栏按钮**:在 arXiv 摘要页 / PDF 页点一下 → PDFLite 打开当前页面
+- **工具栏按钮**:在 arXiv 摘要页 / PDF 页、GitHub 的 PDF blob 页点一下 → PDFLite 打开当前页面
 - **右键链接** → 「用 PDFLite 打开链接」:不用先进入页面,列表页直接右键论文链接即可
 - 首次触发浏览器会问「打开 PDFLite?」,勾选「始终允许」以后就是纯一键
+
+App 侧会自动归一化已知的「网页包装 PDF」链接:arXiv(abs/pdf/html/裸编号)、
+GitHub(blob/raw → raw.githubusercontent.com)。其余站点凡是直链 PDF 都能开;
+如果某站点页面是网页壳,右键页面里真正的下载链接用「用 PDFLite 打开链接」即可。
 
 ## 方式二:Bookmarklet(任何浏览器,包括 Safari)
 

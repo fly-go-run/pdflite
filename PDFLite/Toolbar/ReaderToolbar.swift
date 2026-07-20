@@ -20,7 +20,7 @@ struct ReaderToolbar: ToolbarContent {
                 Image(systemName: "house")
             }
             .disabled(!session.hasDocument)
-            .help("回到书架")
+            .help("回到书架 (⇧⌘H)")
 
             Button {
                 session.goBack()

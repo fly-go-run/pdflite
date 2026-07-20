@@ -1,3 +1,4 @@
+import AppKit
 import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -45,6 +46,16 @@ struct AppCommands: Commands {
                 }
             }
             .disabled(recentFiles.recentFiles.isEmpty)
+
+            Divider()
+
+            Button("在 Finder 中显示") {
+                if let url = focusedSession?.fileURL {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(focusedSession?.fileURL == nil)
         }
 
         CommandGroup(replacing: .printItem) {
@@ -142,6 +153,18 @@ struct AppCommands: Commands {
             .disabled(focusedSession?.hasDocument != true)
         }
 
+        // ⌘1–⌘8 jump straight to the Nth tab (Safari/Chrome muscle memory), inserted above
+        // the system's window list in the 窗口 menu. ⌘9/⌘0 are taken by 适合宽度/实际大小
+        // (Preview-aligned), so the jump list stops at 8; AppKit's built-in next/previous
+        // tab commands remain alongside.
+        CommandGroup(before: .windowList) {
+            ForEach(1...8, id: \.self) { index in
+                Button("标签页 \(index)") { Self.selectTab(at: index) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: .command)
+            }
+            Divider()
+        }
+
         CommandMenu("前往") {
             Button("下一页") { focusedSession?.nextPage() }
                 .keyboardShortcut(shortcuts.value(for: .nextPage))
@@ -170,7 +193,28 @@ struct AppCommands: Commands {
             Button("前进") { focusedSession?.goForward() }
                 .keyboardShortcut(shortcuts.value(for: .goForward))
                 .disabled(focusedSession?.navigation.canGoForward != true)
+
+            Divider()
+
+            // The toolbar house button is this action's only other entry point, and the
+            // toolbar is hidden in fullscreen — a menu item must exist so 回到书架 stays
+            // reachable there. ⇧⌘H mirrors Safari's Home.
+            Button("回到书架") { focusedSession?.closeDocument() }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .disabled(focusedSession?.hasDocument != true)
         }
+    }
+
+    /// Select the Nth tab (1-based, tab-bar order) of the frontmost window's tab group.
+    /// Out-of-range indices and untabbed windows are silent no-ops — the menu items are
+    /// static, so they can't track the live tab count for disabling. Routing through
+    /// makeKeyAndOrderFront (rather than tabGroup.selectedWindow) fires the existing
+    /// didBecomeKey bridge, which restores session focus and reader keyboard state.
+    @MainActor
+    private static func selectTab(at index: Int) {
+        let host = NSApp.keyWindow ?? NSApp.mainWindow
+        guard let windows = host?.tabGroup?.windows, index <= windows.count else { return }
+        windows[index - 1].makeKeyAndOrderFront(nil)
     }
 }
 
