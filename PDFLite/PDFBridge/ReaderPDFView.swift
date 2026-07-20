@@ -71,6 +71,16 @@ final class ReaderPDFView: PDFView {
         setCurrentSelection(nil, animate: false)
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // PDFView resolves the semantic color to concrete RGB the moment backgroundColor is
+        // set — a live light/dark switch (system toggle or in-app appearance setting) leaves
+        // the viewport stuck in the previous scheme. Re-assert under the new appearance.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            self.backgroundColor = .windowBackgroundColor
+        }
+    }
+
     var scrollViewForObservation: NSScrollView? {
         documentScrollView
     }
