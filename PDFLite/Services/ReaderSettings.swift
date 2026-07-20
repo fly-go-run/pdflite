@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftUI
@@ -40,6 +41,14 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         case .dark: return .dark
         }
     }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
 }
 
 /// Per-app reading preferences. Light wrapper over UserDefaults so SwiftUI views can bind to it
@@ -77,7 +86,16 @@ final class ReaderSettings {
         didSet {
             guard oldValue != appearanceMode else { return }
             UserDefaults.standard.set(appearanceMode.rawValue, forKey: Key.appearanceMode)
+            applyAppAppearance()
         }
+    }
+
+    /// Window chrome (titlebar / tab bar / toolbar) and AppKit panels follow NSApp.appearance,
+    /// which SwiftUI's .preferredColorScheme never touches — without this, a non-system
+    /// appearance renders the content in one scheme and the top bar in the other. Called on
+    /// every change and once at launch (applicationDidFinishLaunching).
+    func applyAppAppearance() {
+        NSApp.appearance = appearanceMode.nsAppearance
     }
 
     /// Distance multiplier applied to trackpad scroll deltas. 1.0 keeps PDFKit's native feel;

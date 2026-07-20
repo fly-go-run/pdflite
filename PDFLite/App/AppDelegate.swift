@@ -83,6 +83,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Sync window chrome with the stored appearance choice before any window draws.
+        ReaderSettings.shared.applyAppAppearance()
+
         // Space switches don't fire applicationDidBecomeActive when PDFLite is already frontmost
         // — we have to listen for the workspace notification ourselves and re-assert key window
         // / first responder, otherwise menu shortcuts go dead until the user clicks the doc.
