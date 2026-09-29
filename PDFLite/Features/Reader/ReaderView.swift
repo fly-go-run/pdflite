@@ -30,12 +30,7 @@ struct ReaderView: View {
 
                 VStack(spacing: 8) {
                     if let notice = session.persistenceNotice {
-                        Label(notice, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
-                            .foregroundStyle(.primary)
-                            .padding(10)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                            .padding(.horizontal, 12)
+                        noticeBanner(notice)
                     }
                     if session.isSearchVisible {
                         SearchBar(session: session)
@@ -79,6 +74,35 @@ struct ReaderView: View {
             }
         }
         return true
+    }
+
+    /// Notice banner with a ✕. Transient notices clear themselves (see `NoticeBoard`); the ✕ is
+    /// for dismissing early, and the only way to hide a persistent notice.
+    private func noticeBanner(_ notice: SessionNotice) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Label(notice.message, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                session.notices.dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+                    // 24pt square: the glyph is small, the click target shouldn't be.
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("关闭提示")
+            .accessibilityLabel("关闭提示")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .padding(.vertical, 4)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
     }
 
     private var scannedHintBanner: some View {

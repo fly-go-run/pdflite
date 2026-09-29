@@ -94,6 +94,8 @@ final class SelectionPanelController {
             onCopy: { [weak self] in self?.onCopy?() },
             onCancel: { [weak self] in self?.onCancel?() },
             onRetry: { [weak self] in self?.onRetry?() },
+            // Static entry point, so no per-window wiring: Settings is app-wide.
+            onOpenSettings: { SettingsWindow.open(tab: .translation) },
             onJumpToFigure: { [weak self] in self?.onJumpToFigure?() }
         )
     }
@@ -160,7 +162,9 @@ final class SelectionPanelController {
             width = 300
         }
 
-        if translation?.errorMessage != nil {
+        // A missing-key error is one line plus the settings button, so it needs no more room than
+        // the streaming preview; other errors may wrap to three lines.
+        if translation?.errorMessage != nil, translation?.errorKind != .needsConfiguration {
             return NSSize(width: width, height: 100)
         }
         return NSSize(width: width, height: hasPreview ? 72 : 44)

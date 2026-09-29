@@ -49,7 +49,10 @@ final class DocumentSession {
     // MARK: - Document state
     private(set) var fileURL: URL?
     private(set) var openingURL: URL?
-    private(set) var persistenceNotice: String?
+    /// Banner state: transient failures auto-clear, standing conditions stay until dismissed or
+    /// the document changes. Views read `persistenceNotice`; everything posts through `notices`.
+    let notices = NoticeBoard()
+    var persistenceNotice: SessionNotice? { notices.current }
     @ObservationIgnored private let documentRepository: DocumentRepository
     @ObservationIgnored private let annotationRepository: AnnotationRepository
     @ObservationIgnored private let didOpenDocument: (URL) -> Void
@@ -79,6 +82,9 @@ final class DocumentSession {
     var isSidebarVisible: Bool = false
     var sidebarTab: SidebarTab = .outline
     var isSearchVisible: Bool = false
+    /// Bumped by every ⌘F. `isSearchVisible` can't say "already open, focus the field again", so
+    /// the search bar observes this counter instead.
+    private(set) var searchFocusRequest = 0
     var isTranslationInspectorVisible: Bool = false
 
     // MARK: - Outline & search
@@ -152,11 +158,13 @@ final class DocumentSession {
     var canAcceptOpen: Bool { document == nil && fileURL == nil && openingURL == nil }
     var requestedURL: URL? { openingURL ?? fileURL }
     var canHighlight: Bool { hasSelection && annotationsReady && documentId != nil && documentRepository.isPersistent }
-    var highlightHelp: String {
-        if !documentRepository.isPersistent { return "无法保存标注，阅读仍可继续" }
-        if hasDocument && (!annotationsReady || documentId == nil) { return "正在准备标注，请稍候" }
-        return "高亮选区"
+    /// Why highlighting can't run right now, as a notice; nil when nothing is in the way.
+    private var highlightBlocker: SessionNotice? {
+        if !documentRepository.isPersistent { return .annotationsNotSaved }
+        if hasDocument && (!annotationsReady || documentId == nil) { return .preparingAnnotations }
+        return nil
     }
+    var highlightHelp: String { highlightBlocker?.message ?? "高亮选区" }
     var canGoNext: Bool { hasDocument && currentPageIndex < pageCount - 1 }
     var canGoPrevious: Bool { hasDocument && currentPageIndex > 0 }
     var hasSelection: Bool { selection != nil }
@@ -192,7 +200,7 @@ final class DocumentSession {
         flushSave()
         openTask?.cancel()
         openingURL = url.standardizedFileURL
-        persistenceNotice = nil
+        notices.reset()
         openGeneration += 1
         let generation = openGeneration
         let standardizedURL = url.standardizedFileURL
@@ -289,7 +297,7 @@ final class DocumentSession {
         needsBridgeRestore = true
         updateActiveOutlineItem()
         if !documentRepository.isPersistent {
-            persistenceNotice = "无法保存阅读进度和标注，阅读仍可继续。请检查存储空间与文件权限后重新打开应用。"
+            notices.post(.persistent("无法保存阅读进度和标注，阅读仍可继续。请检查存储空间与文件权限后重新打开应用。"))
         }
 
         // Hand the live PDFDocument to the warmup service. Sharing the same instance lets
@@ -316,7 +324,7 @@ final class DocumentSession {
             hash = value
         case .failure(let error):
             logger.error("Failed to hash \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            persistenceNotice = "无法确认文档内容，本次阅读进度和标注无法保存。请重新打开文件。"
+            notices.post(.persistent("无法确认文档内容，本次阅读进度和标注无法保存。请重新打开文件。"))
             hash = nil
         }
         guard let hash else { return }
@@ -332,7 +340,7 @@ final class DocumentSession {
         } catch {
             logger.error("DocumentRepository upsert failed: \(error.localizedDescription, privacy: .public)")
             guard openGeneration == generation, document === doc else { return }
-            persistenceNotice = "无法保存阅读进度和标注：\(error.localizedDescription)"
+            notices.post(.persistent("无法保存阅读进度和标注：\(error.localizedDescription)"))
             return
         }
         guard openGeneration == generation, document === doc else { return }
@@ -359,10 +367,10 @@ final class DocumentSession {
                 guard openGeneration == generation, document === doc else { return }
                 annotationService?.restore(records: annotations)
                 annotationsReady = true
-                if persistenceNotice == "正在准备标注，请稍候" { persistenceNotice = nil }
+                notices.resolve(.preparingAnnotations)
             } catch {
                 guard openGeneration == generation, document === doc else { return }
-                persistenceNotice = "无法恢复已保存的高亮：\(error.localizedDescription)"
+                notices.post(.persistent("无法恢复已保存的高亮：\(error.localizedDescription)"))
             }
         }
     }
@@ -381,7 +389,7 @@ final class DocumentSession {
         openingURL = nil
         pendingLocation = nil
         needsBridgeRestore = false
-        persistenceNotice = nil
+        notices.reset()
         document = nil
         documentId = nil
         isLikelyScanned = false
@@ -581,7 +589,24 @@ final class DocumentSession {
     func toggleSearch(open: Bool? = nil) {
         let target = open ?? !isSearchVisible
         isSearchVisible = target
-        if !target { search.clear() }
+        if target {
+            // Also when the bar is already open: ⌘F must pull focus back into the field.
+            searchFocusRequest += 1
+        } else {
+            search.clear()
+            focusReader()
+        }
+    }
+
+    /// Give keyboard focus back to the PDF after the search bar closes, so arrows / space keep
+    /// scrolling. Unlike `restoreReaderKeyboardFocusIfAppropriate` this is unconditional: that
+    /// method deliberately yields to any NSTextView, and the search field's field editor is
+    /// exactly the responder we need to replace — it can even linger after its SwiftUI field is
+    /// removed (Skim works around the same AppKit behaviour: SKMainWindowController.m ~1937).
+    /// https://developer.apple.com/documentation/appkit/nswindow/makefirstresponder(_:)
+    private func focusReader() {
+        guard let pdfView, let window = pdfView.window else { return }
+        window.makeFirstResponder(pdfView)
     }
 
     private func navigateSearchResult(_ result: PDFSelection) {
@@ -605,7 +630,9 @@ final class DocumentSession {
     func highlightSelection() {
         guard canHighlight, let snapshot = selection,
               let documentId, let service = annotationService else {
-            if hasSelection, persistenceNotice == nil { persistenceNotice = highlightHelp }
+            if hasSelection, persistenceNotice == nil, let blocker = highlightBlocker {
+                notices.post(blocker)
+            }
             return
         }
 
@@ -622,7 +649,7 @@ final class DocumentSession {
                 service.removeRuntimeAnnotations(groupId: groupId)
                 guard let self, self.openGeneration == generation else { return }
                 self.logger.error("Failed to persist annotation: \(error.localizedDescription, privacy: .public)")
-                self.persistenceNotice = "无法保存高亮：\(error.localizedDescription)"
+                self.notices.post(.transient("无法保存高亮：\(error.localizedDescription)"))
             }
         }
 
@@ -807,7 +834,7 @@ final class DocumentSession {
                 service.removeRuntimeAnnotations(groupId: groupId)
             } catch {
                 guard let self, self.openGeneration == generation else { return }
-                self.persistenceNotice = "无法删除高亮，原标注已保留：\(error.localizedDescription)"
+                self.notices.post(.transient("无法删除高亮，原标注已保留：\(error.localizedDescription)"))
             }
         }
     }
@@ -821,7 +848,7 @@ final class DocumentSession {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             } catch {
-                self?.persistenceNotice = "无法读取高亮原文：\(error.localizedDescription)"
+                self?.notices.post(.transient("无法读取高亮原文：\(error.localizedDescription)"))
             }
         }
     }
@@ -949,7 +976,7 @@ final class DocumentSession {
                     try await documentRepository.updateReadingState(documentId: id, location: location)
                 } catch {
                     guard !Task.isCancelled, let self, self.openGeneration == generation else { return }
-                    self.persistenceNotice = "无法保存阅读进度：\(error.localizedDescription)"
+                    self.notices.post(.persistent("无法保存阅读进度：\(error.localizedDescription)"))
                 }
             }
         }
@@ -963,7 +990,7 @@ final class DocumentSession {
         do {
             try documentRepository.updateReadingStateNow(documentId: documentId, location: location)
         } catch {
-            persistenceNotice = "无法保存阅读进度：\(error.localizedDescription)"
+            notices.post(.persistent("无法保存阅读进度：\(error.localizedDescription)"))
         }
     }
 

@@ -72,15 +72,28 @@ struct TranslationInspector: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
-                    if session.translation.canRetry {
-                        Button {
-                            session.retryTranslation()
-                        } label: {
-                            Label("重试", systemImage: "arrow.clockwise")
-                                .font(.system(size: 12))
+                    HStack(spacing: 8) {
+                        if translation.errorKind == .needsConfiguration {
+                            Button {
+                                SettingsWindow.open(tab: .translation)
+                            } label: {
+                                Label("打开设置", systemImage: "gearshape")
+                                    .font(.system(size: 12))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .help("打开设置 → 翻译，填写 DeepSeek API Key")
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        if session.translation.canRetry {
+                            Button {
+                                session.retryTranslation()
+                            } label: {
+                                Label("重试", systemImage: "arrow.clockwise")
+                                    .font(.system(size: 12))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
                     }
                 } else if !translation.partial.isEmpty {
                     Text(translation.partial)

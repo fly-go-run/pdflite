@@ -1,19 +1,52 @@
 import AppKit
 import KeyboardShortcuts
+import Observation
 import SwiftUI
+
+enum SettingsTab: Hashable {
+    case translation, reading, shortcuts
+}
+
+/// In-memory only: lets code outside the Settings scene (the missing-API-key buttons) choose the
+/// tab the window lands on. Not persisted, so it is not a user setting.
+@MainActor
+@Observable
+final class SettingsNavigation {
+    static let shared = SettingsNavigation()
+    var selectedTab: SettingsTab = .translation
+}
+
+enum SettingsWindow {
+    /// Open the Settings window from anywhere, including a non-scene NSPanel where
+    /// `SettingsLink` / `@Environment(\.openSettings)` have no scene to talk to. `showSettingsWindow:`
+    /// is the action SwiftUI's `Settings` scene installs on macOS 13+; the responder-chain send is
+    /// the same call macai uses (references/macai ContentView.openPreferencesView).
+    /// https://developer.apple.com/documentation/swiftui/settings
+    @MainActor
+    static func open(tab: SettingsTab = .translation) {
+        SettingsNavigation.shared.selectedTab = tab
+        NSApp.activate()
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+}
 
 /// Macos `Settings { ... }` window content. Three tabs: 翻译 (DeepSeek API config), 阅读
 /// (selection / highlight behaviour), 快捷键 (read-only cheat sheet — users can re-map any
 /// menu item via System Settings → Keyboard → App Shortcuts).
 struct SettingsView: View {
+    @State private var navigation = SettingsNavigation.shared
+
     var body: some View {
-        TabView {
+        TabView(selection: $navigation.selectedTab) {
             TranslationSettingsView()
                 .tabItem { Label("翻译", systemImage: "character.bubble") }
+                .tag(SettingsTab.translation)
             ReadingSettingsView()
                 .tabItem { Label("阅读", systemImage: "highlighter") }
+                .tag(SettingsTab.reading)
             ShortcutsSettingsView()
                 .tabItem { Label("快捷键", systemImage: "keyboard") }
+                .tag(SettingsTab.shortcuts)
         }
         .frame(width: 520, height: 420)
     }
@@ -46,6 +79,17 @@ private struct TranslationSettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 4)
+            }
+
+            Section {
+                DisclosureGroup("配置文件格式") {
+                    Text(TranslationConfig.fileFormatSample)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
+                }
+                .font(.system(size: 12))
             }
 
             if let statusMessage {

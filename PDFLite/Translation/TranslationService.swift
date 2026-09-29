@@ -14,6 +14,8 @@ struct TranslationOutput: Equatable {
     var errorMessage: String?
     var startedAt: Date
     var completedAt: Date?
+    /// Set alongside `errorMessage` when the UI can offer a specific fix; nil for generic errors.
+    var errorKind: TranslationErrorKind? = nil
 }
 
 @MainActor
@@ -135,11 +137,10 @@ final class TranslationService {
                 partial: "",
                 isStreaming: false,
                 fromCache: false,
-                errorMessage: [configError.errorDescription, configError.recoverySuggestion]
-                    .compactMap { $0 }
-                    .joined(separator: "\n\n"),
+                errorMessage: configError.errorDescription,
                 startedAt: Date(),
-                completedAt: Date()
+                completedAt: Date(),
+                errorKind: .needsConfiguration
             )
             return
         } catch {

@@ -15,6 +15,9 @@ final class SearchService {
     /// Bumped whenever `results` itself changes (new search, batch flush, clear). The bridge
     /// layer uses it to skip re-tinting hundreds of selections on unrelated updateNSView passes.
     private(set) var resultsRevision: Int = 0
+    /// The query `results` belong to (set when a find starts, nil after `clear()`). `query` is the
+    /// live text field and runs ahead of it while the user is typing.
+    private(set) var searchedQuery: String?
 
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     @ObservationIgnored private weak var findingDocument: PDFDocument?
@@ -37,6 +40,18 @@ final class SearchService {
         }
     }
 
+    /// Return / ⇧Return in the search field, following Safari and Preview: with results already
+    /// on hand for exactly this query it steps to the next / previous match (wrapping), instead
+    /// of re-running the find — which would clear the results and snap back to match 1. A changed
+    /// query (typed but not yet debounced) or an empty result set starts a fresh search.
+    func submit(in document: PDFDocument, backwards: Bool = false) {
+        guard hasResults, searchedQuery == query else {
+            search(in: document)
+            return
+        }
+        if backwards { previous() } else { next() }
+    }
+
     /// Incremental async find via PDFDocument.beginFindString. Matches stream in on the main
     /// queue as they're found; the first match lands immediately (so jump-to-first feels
     /// instant) and the rest flush in batches to keep UI invalidation cheap.
@@ -51,6 +66,7 @@ final class SearchService {
         }
 
         isSearching = true
+        searchedQuery = q
         results = []
         pendingMatches = []
         currentIndex = 0
@@ -103,6 +119,7 @@ final class SearchService {
         debounceTask?.cancel()
         cancelOngoingFind()
         query = ""
+        searchedQuery = nil
         results = []
         currentIndex = 0
         navigationRevision += 1

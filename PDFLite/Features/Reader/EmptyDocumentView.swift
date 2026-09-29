@@ -5,6 +5,13 @@ struct EmptyDocumentView: View {
     @Bindable var session: DocumentSession
     @State private var recentFiles = RecentFilesService.shared
     @State private var isDropTargeted = false
+    /// True once an open has been running longer than `openingIndicatorDelay`. Quick opens finish
+    /// before this flips, so they never flash a spinner.
+    @State private var showsOpeningIndicator = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Opens that finish within this window (the common case) show no loading state at all.
+    private static let openingIndicatorDelay: Duration = .milliseconds(150)
 
     var body: some View {
         ScrollView {
@@ -37,6 +44,56 @@ struct EmptyDocumentView: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay {
+            if showsOpeningIndicator, let url = session.openingURL {
+                openingOverlay(fileName: url.lastPathComponent)
+                    .transition(.opacity)
+            }
+        }
+        // Restarts whenever the URL being opened changes; SwiftUI cancels the previous sleep, so
+        // an open that completes (or fails) inside the delay never turns the indicator on.
+        .task(id: session.openingURL) {
+            guard session.openingURL != nil else {
+                setOpeningIndicator(false)
+                return
+            }
+            try? await Task.sleep(for: Self.openingIndicatorDelay)
+            guard !Task.isCancelled else { return }
+            setOpeningIndicator(true)
+        }
+    }
+
+    /// Reduce Motion: flip the state without the fade.
+    private func setOpeningIndicator(_ visible: Bool) {
+        guard showsOpeningIndicator != visible else { return }
+        if reduceMotion {
+            showsOpeningIndicator = visible
+        } else {
+            withAnimation(.easeInOut(duration: 0.15)) { showsOpeningIndicator = visible }
+        }
+    }
+
+    /// Dims the bookshelf and says what is loading. It also swallows clicks, so nothing behind it
+    /// can start a second open while this one is in flight.
+    private func openingOverlay(fileName: String) -> some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor).opacity(0.7)
+            VStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.regular)
+                Text("正在打开 \(fileName)…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 320)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在打开 \(fileName)")
     }
 
     private var hero: some View {
@@ -77,6 +134,7 @@ struct EmptyDocumentView: View {
                 ForEach(recentFiles.recentFiles) { recent in
                     BookshelfCard(
                         recent: recent,
+                        isOpeningDocument: session.openingURL != nil,
                         openAction: { DocumentOpener.requestOpen(url: recent.url, preferring: session) },
                         removeAction: { recentFiles.remove(recent) }
                     )

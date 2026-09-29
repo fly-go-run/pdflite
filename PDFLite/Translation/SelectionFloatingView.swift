@@ -16,6 +16,7 @@ struct SelectionFloatingView: View {
     let onCopy: () -> Void
     let onCancel: () -> Void
     let onRetry: () -> Void
+    let onOpenSettings: () -> Void
     let onJumpToFigure: () -> Void
 
     var body: some View {
@@ -99,7 +100,22 @@ struct SelectionFloatingView: View {
 
     @ViewBuilder
     private func preview(for translation: TranslationOutput) -> some View {
-        if let error = translation.errorMessage {
+        if translation.errorKind == .needsConfiguration, let error = translation.errorMessage {
+            // Message and fix side by side on one row: the button used to be missing because
+            // the multi-line message pushed everything else out of the card.
+            HStack(spacing: 8) {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("打开设置", action: onOpenSettings)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("打开设置 → 翻译，填写 DeepSeek API Key")
+            }
+        } else if let error = translation.errorMessage {
             Text(error)
                 .font(.system(size: 11))
                 .foregroundStyle(.red)

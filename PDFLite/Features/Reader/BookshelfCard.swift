@@ -3,6 +3,9 @@ import SwiftUI
 
 struct BookshelfCard: View {
     let recent: RecentFile
+    /// The window is already opening a file. Clicking another card meanwhile would route the
+    /// second open into a new window, so the card is inert until the first open settles.
+    var isOpeningDocument: Bool = false
     let openAction: () -> Void
     let removeAction: () -> Void
 
@@ -35,6 +38,7 @@ struct BookshelfCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isOpeningDocument)
         .accessibilityLabel("打开 \(recent.displayName)")
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) {
@@ -43,6 +47,7 @@ struct BookshelfCard: View {
         }
         .contextMenu {
             Button("打开", action: openAction)
+                .disabled(isOpeningDocument)
             Button("在 Finder 中显示") {
                 NSWorkspace.shared.activateFileViewerSelecting([recent.url])
             }
