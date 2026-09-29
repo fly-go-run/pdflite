@@ -27,9 +27,9 @@ struct SelectionSnapshot {
 }
 
 enum SelectionService {
-    /// Build a snapshot from PDFView's current selection. Walks `selectionsByLine()`, sorts into
-    /// document order, groups per page, and assembles a paragraph-aware rawText using the line's
-    /// vertical gap as the paragraph cue.
+    /// Build a snapshot from PDFView's current selection. Walks `selectionsByLine()`, orders by
+    /// page (keeping PDFKit's order within a page), groups per page, and assembles a
+    /// paragraph-aware rawText using the line's vertical gap as the paragraph cue.
     @MainActor
     static func snapshot(from pdfView: PDFView) -> SelectionSnapshot? {
         guard let selection = pdfView.currentSelection,
@@ -79,13 +79,10 @@ enum SelectionService {
 
         guard !entries.isEmpty else { return nil }
 
-        // Document order: page asc; same page, top-first (PDF y axis increases upward, so larger
-        // maxY is higher on the page). PDFKit usually returns lines in this order already, but
-        // sort defensively for cross-page selections.
-        entries.sort { a, b in
-            if a.pageIndex != b.pageIndex { return a.pageIndex < b.pageIndex }
-            return a.rect.maxY > b.rect.maxY
-        }
+        // Document order: page asc, and *within* a page exactly the order PDFKit returned. A
+        // geometric top-first sort would put column 2 ahead of column 1 (its lines sit higher on
+        // the page) and break a paragraph that runs from the bottom of one column into the next.
+        entries = inDocumentOrder(entries) { $0.pageIndex }
 
         // Median line height drives the paragraph-break threshold so the heuristic adapts to font
         // size automatically. 0.6× the line height tends to catch real paragraph gaps without
@@ -146,6 +143,18 @@ enum SelectionService {
         guard !pages.isEmpty else { return nil }
 
         return SelectionSnapshot(pages: pages, rawText: rawText)
+    }
+
+    /// Orders `items` by page index only. The sort is stable, so items on the same page keep
+    /// PDFKit's own reading order (which follows columns; a y-based sort would not). Pure and
+    /// independent of PDFKit so the ordering rule can be unit-tested directly.
+    static func inDocumentOrder<T>(_ items: [T], pageIndex: (T) -> Int) -> [T] {
+        items.enumerated()
+            .sorted { a, b in
+                let (pa, pb) = (pageIndex(a.element), pageIndex(b.element))
+                return pa != pb ? pa < pb : a.offset < b.offset
+            }
+            .map(\.element)
     }
 
     /// Use PDFKit's character ranges when line splitting is unavailable. A multi-page

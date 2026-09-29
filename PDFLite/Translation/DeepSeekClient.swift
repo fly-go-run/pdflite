@@ -12,7 +12,11 @@ struct DeepSeekClient {
     }
 
     /// Yields the assistant's text deltas as they arrive over the SSE stream. The stream
-    /// finishes when the server sends `data: [DONE]` or closes the connection.
+    /// finishes normally only when the translation is provably complete: `data: [DONE]`, or a
+    /// terminal `finish_reason` of `"stop"` (accepted even if the connection then closes without
+    /// `[DONE]`). A stream that just ends — or whose `finish_reason` is `length` /
+    /// `content_filter` / anything else — throws `TranslationStreamError.incomplete`, so the
+    /// caller never mistakes a truncated translation for a finished one.
     /// Cancellation: cancel the consuming Task, or call `continuation.finish` from the caller —
     /// the inner streaming Task observes Task.isCancelled and tears down the URLSession bytes
     /// stream.
@@ -34,11 +38,16 @@ struct DeepSeekClient {
                     // longer want, and AsyncBytes tears down the connection on cancellation.
                     try Task.checkCancellation()
                     if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                        let body = await Self.collectBody(from: bytes, limit: 4096)
+                        let body = await Self.collectBody(from: bytes, limit: Self.strayBodyLimit)
                         continuation.finish(throwing: Self.error(forStatus: http.statusCode, body: body))
                         return
                     }
 
+                    var deltaCount = 0
+                    // Lines that aren't SSE at all. A 200 response can carry a plain JSON error
+                    // body (no `data:` prefix); keep a bounded copy so it can be reported instead
+                    // of the misleading "empty output".
+                    var strayBody = ""
                     for try await line in bytes.lines {
                         if Task.isCancelled {
                             continuation.finish(throwing: CancellationError())
@@ -47,19 +56,44 @@ struct DeepSeekClient {
                         guard let chunk = Self.parseSSELine(line) else { continue }
                         switch chunk {
                         case .done:
+                            // A non-"stop" finish_reason has already failed the stream above, so
+                            // reaching [DONE] means the model finished.
                             continuation.finish()
                             return
-                        case .delta(let text):
-                            continuation.yield(text)
+                        case .data(let delta, let finishReason):
+                            if let delta {
+                                deltaCount += 1
+                                continuation.yield(delta)
+                            }
+                            if let finishReason {
+                                if finishReason == "stop" {
+                                    continuation.finish()
+                                } else {
+                                    continuation.finish(throwing: TranslationStreamError.incomplete(reason: finishReason))
+                                }
+                                return
+                            }
+                        case .stray(let text):
+                            if strayBody.utf8.count < Self.strayBodyLimit {
+                                strayBody += text + "\n"
+                            }
                         case .error(let err):
                             continuation.finish(throwing: err)
                             return
                         }
                     }
-                    continuation.finish()
+                    // The connection closed with neither [DONE] nor a terminal finish_reason.
+                    if deltaCount == 0, let message = Self.extractServerMessage(strayBody) {
+                        continuation.finish(throwing: TranslationStreamError.server(message: message))
+                    } else {
+                        continuation.finish(throwing: TranslationStreamError.incomplete(reason: nil))
+                    }
                 } catch {
-                    if error is CancellationError {
-                        continuation.finish(throwing: error)
+                    // URLSession reports a torn-down request as URLError.cancelled; that is the
+                    // caller cancelling, not a network failure worth showing.
+                    if Task.isCancelled || error is CancellationError
+                        || (error as? URLError)?.code == .cancelled {
+                        continuation.finish(throwing: CancellationError())
                     } else {
                         continuation.finish(throwing: TranslationStreamError.network(error))
                     }
@@ -94,18 +128,30 @@ struct DeepSeekClient {
 
     // MARK: - SSE parsing
 
-    private enum Chunk {
-        case delta(String)
+    /// Upper bound for the non-SSE / non-2xx body kept for error reporting.
+    private static let strayBodyLimit = 4096
+
+    enum Chunk {
+        /// One `choices[0]` update: text delta and/or the terminal `finish_reason` (either may be
+        /// present on its own; some servers put both in the last chunk).
+        case data(delta: String?, finishReason: String?)
         case done
         case error(Error)
+        /// Not SSE at all (no `data:` prefix, not a comment or SSE field): possibly the body of a
+        /// JSON error returned with a 200 status.
+        case stray(String)
     }
 
-    private static func parseSSELine(_ line: String) -> Chunk? {
+    static func parseSSELine(_ line: String) -> Chunk? {
         // Skip blanks and SSE comments (lines starting with ':').
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         guard !trimmed.hasPrefix(":") else { return nil }
-        guard trimmed.hasPrefix("data:") else { return nil }
+        guard trimmed.hasPrefix("data:") else {
+            // Other SSE fields carry nothing we need; anything else is a stray (error) body.
+            let isSSEField = ["event:", "id:", "retry:"].contains { trimmed.hasPrefix($0) }
+            return isSSEField ? nil : .stray(trimmed)
+        }
 
         let payload = String(trimmed.dropFirst("data:".count))
             .trimmingCharacters(in: .whitespaces)
@@ -125,20 +171,27 @@ struct DeepSeekClient {
                 return .error(TranslationStreamError.server(message: message))
             }
             guard let choices = json["choices"] as? [[String: Any]],
-                  let first = choices.first,
-                  let delta = first["delta"] as? [String: Any] else {
+                  let first = choices.first else {
                 return nil
             }
-            if let content = delta["content"] as? String, !content.isEmpty {
-                return .delta(content)
+            var text: String?
+            if let delta = first["delta"] as? [String: Any],
+               let content = delta["content"] as? String, !content.isEmpty {
+                text = content
             }
-            return nil
+            // JSON null (every non-terminal chunk) bridges to NSNull, which `as? String` rejects.
+            var reason: String?
+            if let raw = first["finish_reason"] as? String, !raw.isEmpty {
+                reason = raw
+            }
+            guard text != nil || reason != nil else { return nil }
+            return .data(delta: text, finishReason: reason)
         } catch {
             return nil
         }
     }
 
-    private static func error(forStatus status: Int, body: String?) -> Error {
+    static func error(forStatus status: Int, body: String?) -> Error {
         let extracted = body.flatMap(extractServerMessage)
         let summary: String
         switch status {
@@ -154,12 +207,12 @@ struct DeepSeekClient {
             summary = "DeepSeek 请求失败（HTTP \(status)）"
         }
         if let extracted, !extracted.isEmpty {
-            return TranslationStreamError.server(message: "\(summary)：\(extracted)")
+            return TranslationStreamError.http(status: status, message: "\(summary)：\(extracted)")
         }
-        return TranslationStreamError.server(message: summary)
+        return TranslationStreamError.http(status: status, message: summary)
     }
 
-    private static func extractServerMessage(_ body: String) -> String? {
+    static func extractServerMessage(_ body: String) -> String? {
         guard let data = body.data(using: .utf8) else { return nil }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -187,14 +240,37 @@ struct DeepSeekClient {
 
 enum TranslationStreamError: LocalizedError {
     case network(Error)
+    /// The server reported an error inside a 200 response (in-stream or plain JSON body).
     case server(message: String)
+    /// Non-2xx HTTP status. Kept separate from `.server` so callers can react to the status
+    /// (a 401/403 means the cached config is stale) without parsing text.
+    case http(status: Int, message: String)
+    /// The stream ended before a complete translation arrived. `reason` is the terminal
+    /// `finish_reason` when the model stopped for something other than "stop"; nil means the
+    /// connection simply closed without `[DONE]` or any finish_reason.
+    case incomplete(reason: String?)
 
     var errorDescription: String? {
         switch self {
         case .network(let underlying):
             return "网络错误：\(underlying.localizedDescription)"
-        case .server(let message):
+        case .server(let message), .http(_, let message):
             return message
+        case .incomplete(let reason):
+            switch reason {
+            case nil:
+                return "译文被中断：连接在译文完整返回前已关闭，请重试"
+            case "length":
+                return "译文因长度上限被截断，可缩短选区后重试"
+            case let other?:
+                return "译文未完整生成：模型以 \(other) 结束，请重试"
+            }
         }
+    }
+
+    /// True for the HTTP statuses that mean the API key / config is wrong or stale.
+    var isAuthFailure: Bool {
+        if case .http(let status, _) = self { return status == 401 || status == 403 }
+        return false
     }
 }
