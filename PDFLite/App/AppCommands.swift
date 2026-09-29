@@ -140,7 +140,7 @@ struct AppCommands: Commands {
                 focusedSession?.highlightSelection()
             }
             .keyboardShortcut(shortcuts.value(for: .highlightSelection))
-            .disabled(focusedSession?.hasSelection != true)
+            .disabled(focusedSession?.canHighlight != true)
 
             Divider()
 

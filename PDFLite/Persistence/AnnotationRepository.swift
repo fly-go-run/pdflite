@@ -4,7 +4,11 @@ import GRDB
 final class AnnotationRepository: Sendable {
     static let shared = AnnotationRepository()
 
-    private let db = Database.shared
+    private let db: Database
+
+    init(database: Database = .shared) {
+        db = database
+    }
 
     func list(forDocumentId documentId: Int64) async throws -> [AnnotationRecord] {
         try await db.writer.read { db in

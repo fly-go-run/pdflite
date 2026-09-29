@@ -6,7 +6,6 @@ struct PDFLiteApp: App {
     @State private var recentFiles = RecentFilesService.shared
     @State private var shortcuts = AppShortcuts.shared
     @State private var appFocus = AppFocusState.shared
-    @State private var settings = ReaderSettings.shared
 
     @FocusedValue(\.documentSession) private var focusedSession
 
@@ -17,12 +16,10 @@ struct PDFLiteApp: App {
         // trigger Scene rebuilds — and menu items keep their old key bindings until app restart.
         let _ = shortcuts.revision
         let commandSession = focusedSession ?? appFocus.activeSession
-        let colorScheme = settings.appearanceMode.colorScheme
 
         WindowGroup("PDFLite", id: "reader") {
             ReaderWindowView()
                 .frame(minWidth: 720, minHeight: 480)
-                .preferredColorScheme(colorScheme)
         }
         // unifiedCompact: toolbar shares one ~38pt row with the (leading) title instead of the
         // ~52pt unified row — the single biggest chrome saving available without giving up the
@@ -49,7 +46,6 @@ struct PDFLiteApp: App {
 
         Settings {
             SettingsView()
-                .preferredColorScheme(colorScheme)
         }
     }
 }

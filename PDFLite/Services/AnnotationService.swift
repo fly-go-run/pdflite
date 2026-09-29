@@ -66,7 +66,7 @@ final class AnnotationService {
             // Record's `selected_text` only carries this page's portion of the original text. The
             // full source can be reconstructed by concatenating across the group, in document
             // order — repository helpers do that for the "复制原文" context menu.
-            let pageText = excerpt(forPage: pageSelection, in: snapshot)
+            let pageText = pageSelection.text
             records.append(AnnotationRecord(
                 id: UUID().uuidString,
                 groupId: groupId,
@@ -120,36 +120,6 @@ final class AnnotationService {
         annotation.color = Self.color(fromHex: hex) ?? Self.defaultHighlightColor
         annotation.userName = Self.userName(for: groupId)
         return annotation
-    }
-
-    /// Slice the snapshot's rawText down to the portion belonging to `pageSelection`. v0
-    /// approximates by splitting the rawText into paragraph blocks proportional to per-page line
-    /// counts — works well enough for "copy original" context menus without a full per-line text
-    /// map.
-    private func excerpt(forPage pageSelection: PageSelection, in snapshot: SelectionSnapshot) -> String {
-        // For a single-page snapshot just return the whole rawText.
-        if !snapshot.spansMultiplePages { return snapshot.rawText }
-
-        // Cheap approximation: distribute rawText across pages by line-count weight. Over- or
-        // under-sliced edges are tolerable since this only feeds the right-click "复制原文" menu;
-        // translation uses snapshot.rawText directly.
-        let totalLines = snapshot.pages.reduce(0) { $0 + $1.lineRects.count }
-        guard totalLines > 0 else { return snapshot.rawText }
-
-        let chars = Array(snapshot.rawText)
-        let totalChars = chars.count
-
-        var startLines = 0
-        for p in snapshot.pages {
-            if p.pageIndex == pageSelection.pageIndex { break }
-            startLines += p.lineRects.count
-        }
-        let endLines = startLines + pageSelection.lineRects.count
-
-        let startChar = totalChars * startLines / totalLines
-        let endChar = totalChars * endLines / totalLines
-        guard startChar < endChar else { return "" }
-        return String(chars[startChar..<endChar])
     }
 
     private static func userName(for groupId: String) -> String {

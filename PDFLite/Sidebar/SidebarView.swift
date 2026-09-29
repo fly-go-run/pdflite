@@ -7,7 +7,7 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             Picker("", selection: $session.sidebarTab) {
                 ForEach(SidebarTab.allCases) { tab in
-                    Image(systemName: tab.systemImage)
+                    Image(systemName: tab.systemImage).accessibilityLabel(tab == .outline ? "目录" : "缩略图")
                         .tag(tab)
                 }
             }

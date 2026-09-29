@@ -8,13 +8,13 @@ import os.log
 /// DatabasePool (WAL mode): reads run concurrently with each other *and* with writes, so a
 /// debounced reading-state write can't stall an annotation/translation lookup.
 final class Database: Sendable {
-    static let shared = Database()
+    static let shared = Database(url: AppPaths.sqliteURL)
 
     private let logger = Logger(subsystem: "com.pdflite.app", category: "Database")
     let writer: any DatabaseWriter
+    let isPersistent: Bool
 
-    private init() {
-        let url = AppPaths.sqliteURL
+    init(url: URL) {
         var config = Configuration()
         config.label = "pdflite.reader"
 
@@ -23,16 +23,18 @@ final class Database: Sendable {
             let pool = try DatabasePool(path: url.path, configuration: config)
             try Self.migrator.migrate(pool)
             candidate = pool
+            isPersistent = true
         } catch {
             // Per §8: a broken DB shouldn't block reading — but we still need *some* writer.
             // Fall back to an in-memory queue so the app can run (DatabasePool requires a file);
-            // persistence operations will surface their own errors back to the user.
+            // Expose this explicitly: writes to the fallback succeed but are not durable.
             Logger(subsystem: "com.pdflite.app", category: "Database")
                 .error("Failed to open SQLite at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public). Falling back to in-memory.")
             // swiftlint:disable:next force_try
             let fallback = try! DatabaseQueue()
             try? Self.migrator.migrate(fallback)
             candidate = fallback
+            isPersistent = false
         }
         self.writer = candidate
     }
@@ -161,6 +163,13 @@ final class Database: Sendable {
             try db.create(index: "idx_documents_file_url",
                           on: "documents",
                           columns: ["file_url", "updated_at"])
+        }
+
+        m.registerMigration("v7_reading_location") { db in
+            try db.alter(table: "documents") { t in
+                t.add(column: "last_scroll_x", .double)
+                t.add(column: "last_auto_scales", .boolean)
+            }
         }
 
         return m

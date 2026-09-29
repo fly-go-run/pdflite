@@ -1,13 +1,13 @@
 # PDFLite 系统设计方案
 
 状态：唯一权威设计文档，后续 AI coding 以本文为准  
-更新时间：2026-05-06
+更新时间：2026-09-14
 
 本文档是 PDFLite 第一版的唯一权威设计文档。后续 AI coding、架构 review、Phase 拆分、依赖判断、参考项目选择，都以本文为准。`AGENTS.md` 只作为入口文件，旧方案文档放入 `docs/archive/`，不得作为实现基准。
 
 ## 0. 当前进度速览
 
-更新时间：2026-05-06
+更新时间：2026-09-14
 
 已交付（Phase 1–4 全部完成 + 若干增强）：
 
@@ -17,11 +17,19 @@
 4. Phase 4 论文增强：Smart Jump 返回栈、Reference preview、Figure/Table 跳转。
 5. 设计外增强：Settings 窗口（DeepSeek 配置 + 快捷键自定义 + 速查 tab）、ReaderSettings、PDFPageWarmupService（滚动预热）、工具栏并入标题栏、NavigationSplitView 三栏、底部浮动 capsule（页码/缩放）、NSVisualEffectView 材质统一。
 
-待办（仅一项）：
+Phase 5 书架已交付。第一版已基本闭环，后续以质量、性能、bug 修复为主。
 
-1. Phase 5 起始页书架：把空状态的"最近打开"文本列表换成 PDF 首页缩略图书架。详见 §10.5。
+2026-09 质量维护（Phase 6–8 后续，已完成）：
 
-第一版到此基本闭环；除 Phase 5 外暂无新功能，后续以质量、性能、bug 修复为主。
+1. 保持当前简洁外观与原生标签页；本轮不新增侧栏 tab、设置开关、Provider 或依赖。
+2. 打开请求在异步解析前占用会话；已打开、正在打开和等待中的同 URL 请求去重；所有文件入口统一路由。
+3. 磁盘数据库降级和保存失败以阅读区内的非模态提示呈现；高亮仅在文档身份确认后可用。删除高亮只有数据库提交成功才移除显示。
+4. 阅读位置统一保存页索引、页内坐标、比例、自动适宽意图和显示模式；返回栈与重开恢复共用。应用失去焦点和退出时 flush，滚动停止后保存页内位置。
+5. 一段连续搜索浏览只记录一次起点；搜索结果导航不在 SwiftUI updateNSView 中发起。程序搜索选区不触发翻译，用户手动选择仍可翻译/高亮。
+6. 引用预览只处理完整的数字引用文本，并校验链接目标页与对应参考文献页一致，普通目录和章节链接照常跳转。
+7. 跨页高亮保留每页真实选区文本；目录跟随考虑同页目标坐标；译文面板区分当前选区与最近翻译。
+8. 测试只使用临时 PDF 和数据库，不修改用户阅读数据；性能预热、固定预览、搜索/标注列表另行评估。
+9. PDF 解析移至 `Services/ParsedDocument.swift`，目录定位归入 `Sidebar/OutlineItem.swift`；`ReadingLocation` 统一视口记录与恢复，仓库支持注入隔离测试数据。
 
 2026-07 体验修复与增强（Phase 6–8，已交付）：
 
@@ -158,7 +166,7 @@ Features/Reader/
 
 1. 每个打开的 PDF 对应一个 `DocumentSession`。
 2. 不把多个 PDF 塞进同一个全局 view model。
-3. 不做 tab 系统，第一版以多窗口为主。
+3. 使用 AppKit 原生标签页与多窗口，不自研 tab 系统。
 4. 没有打开文档时，显示轻量空状态和“打开 PDF”入口，不做营销 landing page。
 
 ### 3.2 Document Session
@@ -445,7 +453,7 @@ TranslationService：
 1. 不引入 OpenAI SDK。
 2. 不引入 Provider 协议和 registry。
 3. 不阻塞 PDFView 主线程。
-4. 用户取消或切换选区时取消旧请求。
+4. 用户取消、关闭文档或开始新的翻译时取消旧请求；仅换选区可保留旧请求，浮卡只展示匹配当前选区的译文。
 5. 日志不得输出 API Key。
 
 ### 3.9 Translation Panel 和 Inspector
@@ -463,9 +471,8 @@ TranslationService：
 
 1. 默认隐藏。
 2. 翻译后自动展开。
-3. 显示当前选区译文。
-4. 显示历史翻译列表。
-5. 每条记录显示页码、原文摘要、译文、复制、跳回原文、保存为笔记。
+3. 显示当前或最近一次译文、来源页码、可折叠原文与复制入口。
+4. 当前实现不展示历史列表；历史回顾、跳回原文、保存为笔记保留为后续提案，本轮不扩展面板。
 
 约束：
 
@@ -507,9 +514,10 @@ Document：
 6. last_opened_at。
 7. last_page。
 8. last_zoom。
-9. last_scroll_y。
-10. display_mode。
-11. created_at / updated_at。
+9. last_scroll_x / last_scroll_y：视口左上角的 PDF 页内坐标。
+10. last_auto_scales：保留自动适宽意图；v7 迁移新增，与 last_scroll_x 一同兼容旧记录。
+11. display_mode。
+12. created_at / updated_at。
 
 Annotation：
 
@@ -815,7 +823,7 @@ SearchState
 3. 高亮创建（`Services/AnnotationService`）。
 4. SQLite schema 和 GRDB repositories（`Persistence/Database` + `*Repository`）。
 5. 重新打开恢复高亮。
-6. 阅读位置恢复（last_page / last_zoom / display_mode）。
+6. 阅读位置恢复（last_page / last_scroll_x / last_scroll_y / last_zoom / last_auto_scales / display_mode）。
 7. 删除高亮（硬删除）。
 
 参考来源：PageFlow、PDFAnnotationEditor、Apple PDFKit 文档、Skim（按需）。
@@ -854,7 +862,7 @@ SearchState
 
 验收：`[12]` 引用预览、Figure/Table 跳转、返回阅读位置全部可用。
 
-### Phase 5：起始页书架 — 待办（当前唯一规划项）
+### Phase 5：起始页书架 — 已完成
 
 背景：当前 `EmptyDocumentView` 是居中竖排的 SF Symbol + 文本列表，整页大量留白，缺少视觉锚点。书架式缩略图让用户"刷一眼认出哪本"，对论文阅读尤其友好（封面差异比文件名差异更直观）。
 
@@ -886,6 +894,10 @@ SearchState
 6. `LazyVGrid` 列数随窗口宽度自适应，不出现单列长条。
 
 ## 11. 测试策略
+
+2026-09 已执行：`PDFLiteTests/ReaderRegressionTests.swift` 的 12 项 XCTest 全部通过。覆盖多文件占位与去重、失败打开与取消、临时数据库降级提示、v6→v7 数据保留、同页位置返回栈、搜索起点与真实选区通知、关闭重开与适宽意图、重命名文件按内容恢复、跨页文本、引用匹配、目录坐标定位、删除标注失败时保留显示。测试目标不启动应用入口，只使用临时生成的 PDF 与独立 SQLite。
+
+运行：先 `xcodegen generate`，再 `xcodebuild -project PDFLite.xcodeproj -scheme PDFLite -configuration Debug -derivedDataPath build -destination 'platform=macOS' test`。
 
 单元测试：
 

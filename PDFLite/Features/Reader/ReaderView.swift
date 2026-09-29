@@ -29,6 +29,14 @@ struct ReaderView: View {
                     }
 
                 VStack(spacing: 8) {
+                    if let notice = session.persistenceNotice {
+                        Label(notice, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                            .padding(10)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 12)
+                    }
                     if session.isSearchVisible {
                         SearchBar(session: session)
                     }

@@ -64,21 +64,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
             view.displayMode = session.displayMode
         }
 
-        // First-time-after-open hand-off: jump to last page + scale. (Annotations restore
-        // separately once the file hash has confirmed document identity.)
-        if let payload = session.consumeBridgeRestore() {
-            if let scale = payload.scale, scale > 0 {
-                view.autoScales = false
-                view.scaleFactor = scale
-            }
-
-            if let document = view.document,
-               payload.page >= 0,
-               payload.page < document.pageCount,
-               let page = document.page(at: payload.page) {
-                view.go(to: page)
-            }
-        }
+        session.restoreBridgeIfNeeded(in: view)
 
         // Search highlights — driven by SearchService state. updateNSView runs on every observed
         // session change (page turns, zoom ticks, streaming translation), so gate the recolor on
@@ -95,14 +81,8 @@ struct PDFKitRepresentable: NSViewRepresentable {
                 // Re-yellow everything: on navigation this also resets the previous current
                 // match from orange back to yellow.
                 for sel in highlighted { sel.color = .yellow }
-                if navChanged, let current = session.search.currentSelection() {
-                    context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
-                    current.color = .orange
-                    view.setCurrentSelection(current, animate: false)
-                    // Route through session.goToSelection so the pre-jump location goes onto the
-                    // back stack — Cmd-[ then returns to where the user was before searching.
-                    session.goToSelection(current)
-                }
+                context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
+                session.search.currentSelection()?.color = .orange
                 view.highlightedSelections = highlighted
             }
         } else {
@@ -217,6 +197,10 @@ struct PDFKitRepresentable: NSViewRepresentable {
         }
 
         @objc func selectionChanged(_ notification: Notification) {
+            if session?.isApplyingSearchSelection == true {
+                selectionDebouncer.cancel()
+                return
+            }
             // PDFKit posts this on every tick of a drag-selection. Building a full snapshot
             // (selectionsByLine + per-line text extraction) each time is wasted main-thread work
             // for intermediate states nobody sees — debounce to the trailing edge and snapshot
@@ -234,7 +218,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
         func handleLinkClick(_ context: LinkClickContext) -> LinkClickDecision {
             guard let session else { return .passThrough }
             // First chance: numeric reference like "[12]" — show a preview instead of jumping.
-            if let number = referenceNumber(in: context.linkText),
+            if let number = Self.referenceNumber(in: context.linkText),
                let anchor = context.screenRect,
                session.requestReferencePreview(
                     number: number,
@@ -249,29 +233,20 @@ struct PDFKitRepresentable: NSViewRepresentable {
             return .jumpAndRecord
         }
 
-        /// Pull the first plausible reference number out of the link's text. PDF link annotations
-        /// often wrap only the digits ("12") rather than the visible "[12]", and grouped citations
-        /// can be "[12, 13]" or "12, 13". Take the first number we find. False positives (page-number
-        /// links, TOC links) are harmless: ReferenceIndex returns nil for them, and the caller
-        /// falls through to .jumpAndRecord.
-        private func referenceNumber(in text: String?) -> Int? {
-            guard let text, !text.isEmpty else { return nil }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            let range = NSRange(location: 0, length: (trimmed as NSString).length)
-            guard let match = Coordinator.referencePattern.firstMatch(in: trimmed, range: range) else {
-                return nil
-            }
-            let numberRange = match.range(at: 1)
-            guard numberRange.location != NSNotFound else { return nil }
-            return Int((trimmed as NSString).substring(with: numberRange))
+        /// Whole citation tokens only: numbers inside section titles are ordinary links.
+        static func referenceNumber(in text: String?) -> Int? {
+            guard let text else { return nil }
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = NSRange(value.startIndex..., in: value)
+            guard let match = referencePattern.firstMatch(in: value, range: range) else { return nil }
+            let numberRange = match.range(at: 1).location == NSNotFound
+                ? match.range(at: 2) : match.range(at: 1)
+            return Int((value as NSString).substring(with: numberRange))
         }
 
-        // First number found anywhere in the text. Matches "[12]", "12", "[12, 13]", "12-15"
-        // alike — we only care about the first integer. Keep the digit cap small (1-3) so we
-        // don't try to look up a 5-digit page anchor.
-        // swiftlint:disable:next force_try
-        private static let referencePattern = try! NSRegularExpression(pattern: #"(\d{1,3})"#)
+        private static let referencePattern = try! NSRegularExpression(
+            pattern: #"^(?:\[\s*(\d{1,3})(?:\s*[,–-]\s*\d{1,3})*\s*\]|(\d{1,3})(?:\s*[,–-]\s*\d{1,3})*)$"#
+        )
 
         @objc private func scrollBoundsChanged(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }
@@ -335,15 +310,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
 
         @objc private func handleCopyText(_ sender: NSMenuItem) {
             guard let groupId = sender.representedObject as? String else { return }
-            // Concatenate per-page selected_text rows into the original full source. For single-
-            // page highlights this is just the one row's text.
-            Task { @MainActor in
-                let text = (try? await AnnotationRepository.shared.concatenatedSelectedText(groupId: groupId)) ?? ""
-                guard !text.isEmpty else { return }
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(text, forType: .string)
-            }
+            session?.copyAnnotationText(groupId: groupId)
         }
     }
 }

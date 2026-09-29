@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import Observation
-import SwiftUI
 
 /// What to do automatically when the user finishes a text selection. Independent of
 /// `autoTranslateOnHighlight`, which only chains *after* a manual highlight.
@@ -34,19 +33,172 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var colorScheme: ColorScheme? {
-        switch self {
-        case .system: return nil
-        case .light: return .light
-        case .dark: return .dark
-        }
-    }
-
     var nsAppearance: NSAppearance? {
         switch self {
         case .system: return nil
         case .light: return NSAppearance(named: .aqua)
         case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+/// Keeps AppKit-owned window chrome in the same scheme as the SwiftUI reader content.
+///
+/// macOS 26 renders native fullscreen tabs through glass views in an auxiliary window. The
+/// auxiliary window inherits the right appearance, but the glass content can retain Aqua after
+/// a live switch to Dark Aqua. A dark tint plus explicit control/text appearances fixes that
+/// public-AppKit boundary without depending on private window or tab-view class names.
+@MainActor
+enum AppAppearanceSynchronizer {
+    private final class GlassTintSnapshot: NSObject {
+        let value: NSColor?
+
+        init(_ value: NSColor?) {
+            self.value = value
+        }
+    }
+
+    private final class AppearanceSnapshot: NSObject {
+        let value: NSAppearance?
+
+        init(_ value: NSAppearance?) {
+            self.value = value
+        }
+    }
+
+    private static var synchronizationRevision = 0
+    private static let originalGlassTints =
+        NSMapTable<NSView, GlassTintSnapshot>.weakToStrongObjects()
+    private static let originalControlAppearances =
+        NSMapTable<NSView, AppearanceSnapshot>.weakToStrongObjects()
+
+    static func applyAppAppearance(_ appearance: NSAppearance?) {
+        NSApp.appearance = appearance
+        scheduleSynchronization()
+    }
+
+    /// AppKit rebuilds fullscreen chrome asynchronously when entering fullscreen or selecting a
+    /// tab. Run an immediate pass, then two short follow-up passes to catch replacement views.
+    static func scheduleSynchronization() {
+        synchronizationRevision += 1
+        let revision = synchronizationRevision
+        synchronizeWindowAppearances()
+
+        Task { @MainActor in
+            await Task.yield()
+            guard revision == synchronizationRevision else { return }
+            synchronizeWindowAppearances()
+
+            try? await Task.sleep(for: .milliseconds(160))
+            guard revision == synchronizationRevision else { return }
+            synchronizeWindowAppearances()
+        }
+    }
+
+    private static func synchronizeWindowAppearances() {
+        let target = NSApp.effectiveAppearance
+        let targetMatch = target.bestMatch(from: [.darkAqua, .aqua])
+        let isDark = targetMatch == .darkAqua
+
+        for window in NSApp.windows {
+            // A transparent titlebar leaves the background around macOS's fullscreen tab
+            // glass in Aqua even after the tab controls themselves switch to Dark Aqua.
+            // Make only the active fullscreen reader titlebar opaque in dark mode; restore the
+            // app's normal transparent chrome for light mode, inactive tabs, and windowed mode.
+            if #available(macOS 26.0, *),
+               window.tabbingIdentifier == "PDFLiteReader" {
+                let shouldAppearTransparent = !(
+                    isDark && window.styleMask.contains(.fullScreen)
+                )
+                if window.titlebarAppearsTransparent != shouldAppearTransparent {
+                    window.titlebarAppearsTransparent = shouldAppearTransparent
+                }
+            }
+
+            // Native fullscreen chrome uses a separate window whose public appearanceSource is
+            // the original fullscreen document window. Restrict glass tinting to that auxiliary
+            // window so ordinary reader/sidebar glass keeps its system-provided material.
+            guard #available(macOS 26.0, *),
+                  let sourceWindow = window.appearanceSource as? NSWindow,
+                  isNativeFullscreenChromeWindow(window, source: sourceWindow),
+                  let rootView = window.contentView else {
+                continue
+            }
+            synchronizeFullscreenChrome(
+                in: rootView,
+                target: target,
+                isDark: isDark
+            )
+        }
+    }
+
+    /// Identifies the native fullscreen tab/titlebar helper using only public window state.
+    /// `appearanceSource` alone is intentionally insufficient because sheets and other child
+    /// windows can inherit from the same fullscreen reader window.
+    private static func isNativeFullscreenChromeWindow(
+        _ window: NSWindow,
+        source: NSWindow
+    ) -> Bool {
+        let frame = window.frame
+        let sourceFrame = source.frame
+        return source !== window
+            && source.tabbingIdentifier == "PDFLiteReader"
+            && source.styleMask.contains(.fullScreen)
+            && window.parent === source
+            && window.sheetParent == nil
+            && !(window is NSPanel)
+            && window.styleMask.isEmpty
+            && window.level == .normal
+            && !window.isOpaque
+            && !window.hasShadow
+            && frame.height > 0
+            && frame.height <= 160
+            && abs(frame.width - sourceFrame.width) <= 2
+            && abs(frame.maxY - sourceFrame.maxY) <= 2
+    }
+
+    private static func synchronizeFullscreenChrome(
+        in view: NSView,
+        target: NSAppearance,
+        isDark: Bool
+    ) {
+        if #available(macOS 26.0, *), let glassView = view as? NSGlassEffectView {
+            if isDark {
+                if originalGlassTints.object(forKey: glassView) == nil {
+                    originalGlassTints.setObject(
+                        GlassTintSnapshot(glassView.tintColor),
+                        forKey: glassView
+                    )
+                }
+                glassView.tintColor = NSColor.black.withAlphaComponent(0.75)
+            } else if let snapshot = originalGlassTints.object(forKey: glassView) {
+                glassView.tintColor = snapshot.value
+                originalGlassTints.removeObject(forKey: glassView)
+            }
+        }
+
+        // The glass content holder can choose Aqua even when its window is Dark Aqua. Applying
+        // the target directly to public controls and labels preserves readable tab titles,
+        // close buttons, and the new-tab button. Restore the exact inherited/explicit value in
+        // light mode so AppKit can resume its normal selection and hover behavior.
+        if view is NSButton || view is NSTextField {
+            if isDark {
+                if originalControlAppearances.object(forKey: view) == nil {
+                    originalControlAppearances.setObject(
+                        AppearanceSnapshot(view.appearance),
+                        forKey: view
+                    )
+                }
+                view.appearance = target
+            } else if let snapshot = originalControlAppearances.object(forKey: view) {
+                view.appearance = snapshot.value
+                originalControlAppearances.removeObject(forKey: view)
+            }
+        }
+
+        view.needsDisplay = true
+        for subview in view.subviews {
+            synchronizeFullscreenChrome(in: subview, target: target, isDark: isDark)
         }
     }
 }
@@ -90,12 +242,12 @@ final class ReaderSettings {
         }
     }
 
-    /// Window chrome (titlebar / tab bar / toolbar) and AppKit panels follow NSApp.appearance,
-    /// which SwiftUI's .preferredColorScheme never touches — without this, a non-system
-    /// appearance renders the content in one scheme and the top bar in the other. Called on
-    /// every change and once at launch (applicationDidFinishLaunching).
+    /// Use NSApp.appearance as the single source for both AppKit chrome and hosted SwiftUI
+    /// content. Keeping windows on their default inherited appearance prevents the Settings
+    /// titlebar and body from updating on different lifecycles. Called on every change and once
+    /// at launch (applicationDidFinishLaunching).
     func applyAppAppearance() {
-        NSApp.appearance = appearanceMode.nsAppearance
+        AppAppearanceSynchronizer.applyAppAppearance(appearanceMode.nsAppearance)
     }
 
     /// Distance multiplier applied to trackpad scroll deltas. 1.0 keeps PDFKit's native feel;

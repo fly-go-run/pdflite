@@ -20,6 +20,7 @@ struct ReaderToolbar: ToolbarContent {
                 Image(systemName: "house")
             }
             .disabled(!session.hasDocument)
+            .accessibilityLabel("回到书架")
             .help("回到书架 (⇧⌘H)")
 
             Button {
@@ -44,8 +45,8 @@ struct ReaderToolbar: ToolbarContent {
         // never jumps when a selection appears.
         ToolbarItemGroup(placement: .primaryAction) {
             Picker("", selection: $session.displayMode) {
-                Image(systemName: "doc.text").tag(PDFDisplayMode.singlePageContinuous)
-                Image(systemName: "rectangle.split.2x1").tag(PDFDisplayMode.twoUpContinuous)
+                Image(systemName: "doc.text").accessibilityLabel("单页连续").tag(PDFDisplayMode.singlePageContinuous)
+                Image(systemName: "rectangle.split.2x1").accessibilityLabel("双页连续").tag(PDFDisplayMode.twoUpContinuous)
             }
             .pickerStyle(.segmented)
             .frame(width: 84)
@@ -56,10 +57,10 @@ struct ReaderToolbar: ToolbarContent {
                 session.highlightSelection()
             } label: {
                 Image(systemName: "highlighter")
-                    .foregroundStyle(session.hasSelection ? .yellow : .secondary)
+                    .foregroundStyle(session.canHighlight ? .yellow : .secondary)
             }
-            .disabled(!session.hasSelection)
-            .help(shortcuts.helpText("高亮选区", for: .highlightSelection))
+            .disabled(!session.canHighlight)
+            .help(shortcuts.helpText(session.highlightHelp, for: .highlightSelection))
 
             Button {
                 session.toggleSearch()
@@ -67,6 +68,7 @@ struct ReaderToolbar: ToolbarContent {
                 Image(systemName: "magnifyingglass")
             }
             .disabled(!session.hasDocument)
+            .accessibilityLabel("搜索")
             .help("搜索 (⌘F)")
 
             Button {
@@ -76,6 +78,7 @@ struct ReaderToolbar: ToolbarContent {
                     .foregroundStyle(session.isTranslationInspectorVisible ? Color.accentColor : .primary)
             }
             .disabled(!session.hasDocument)
+            .accessibilityLabel("翻译面板")
             .help(shortcuts.helpText("翻译面板", for: .toggleInspector))
         }
     }

@@ -77,7 +77,7 @@ struct EmptyDocumentView: View {
                 ForEach(recentFiles.recentFiles) { recent in
                     BookshelfCard(
                         recent: recent,
-                        openAction: { session.openDocument(url: recent.url) },
+                        openAction: { DocumentOpener.requestOpen(url: recent.url, preferring: session) },
                         removeAction: { recentFiles.remove(recent) }
                     )
                 }
@@ -99,11 +99,7 @@ struct EmptyDocumentView: View {
                           url.pathExtension.lowercased() == "pdf"
                     else { return }
                     DispatchQueue.main.async {
-                        if session.canAcceptOpen {
-                            session.openDocument(url: url)
-                        } else {
-                            DocumentOpener.requestOpen(url: url)
-                        }
+                        DocumentOpener.requestOpen(url: url, preferring: session)
                     }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {

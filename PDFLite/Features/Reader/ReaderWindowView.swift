@@ -324,6 +324,15 @@ private struct WindowFocusBridge: NSViewRepresentable {
             // notifications make the transition clean; didEnter re-asserts after it.
             let center = NotificationCenter.default
             tokens.append(center.addObserver(
+                forName: NSWindow.willCloseNotification, object: newWindow, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let session = self?.session else { return }
+                    session.closeDocument()
+                    DocumentOpener.unregister(session)
+                }
+            })
+            tokens.append(center.addObserver(
                 forName: NSWindow.willEnterFullScreenNotification,
                 object: newWindow,
                 queue: .main

@@ -6,7 +6,13 @@ final class DocumentRepository: Sendable {
     static let shared = DocumentRepository()
 
     private let logger = Logger(subsystem: "com.pdflite.app", category: "DocumentRepo")
-    private let db = Database.shared
+    private let db: Database
+
+    var isPersistent: Bool { db.isPersistent }
+
+    init(database: Database = .shared) {
+        db = database
+    }
 
     /// Insert if absent, otherwise update file_url + title + page_count + last_opened_at.
     /// Returns the persisted record (with id).
@@ -46,50 +52,41 @@ final class DocumentRepository: Sendable {
         }
     }
 
-    func updateReadingState(documentId: Int64,
-                            lastPage: Int,
-                            lastZoom: Double?,
-                            displayMode: Int) async throws {
+    func updateReadingState(documentId: Int64, location: ReadingLocation) async throws {
         try await db.writer.write { db in
             try Self.executeReadingStateUpdate(
                 db,
                 documentId: documentId,
-                lastPage: lastPage,
-                lastZoom: lastZoom,
-                displayMode: displayMode
+                location: location
             )
         }
     }
 
     /// Synchronous variant reserved for window-close / app-quit flushes, where the write must
     /// land before teardown continues. Everything else goes through the async API.
-    func updateReadingStateNow(documentId: Int64,
-                               lastPage: Int,
-                               lastZoom: Double?,
-                               displayMode: Int) throws {
+    func updateReadingStateNow(documentId: Int64, location: ReadingLocation) throws {
         try db.writer.write { db in
             try Self.executeReadingStateUpdate(
                 db,
                 documentId: documentId,
-                lastPage: lastPage,
-                lastZoom: lastZoom,
-                displayMode: displayMode
+                location: location
             )
         }
     }
 
     private static func executeReadingStateUpdate(_ db: GRDB.Database,
                                                   documentId: Int64,
-                                                  lastPage: Int,
-                                                  lastZoom: Double?,
-                                                  displayMode: Int) throws {
+                                                  location: ReadingLocation) throws {
         try db.execute(
             sql: """
             UPDATE documents
-            SET last_page = ?, last_zoom = ?, display_mode = ?, updated_at = ?
+            SET last_page = ?, last_zoom = ?, display_mode = ?,
+                last_scroll_x = ?, last_scroll_y = ?, last_auto_scales = ?, updated_at = ?
             WHERE id = ?
             """,
-            arguments: [lastPage, lastZoom, displayMode, Date(), documentId]
+            arguments: [location.pageIndex, location.scale, location.displayMode,
+                        location.point.map { Double($0.x) }, location.point.map { Double($0.y) },
+                        location.autoScales, Date(), documentId]
         )
     }
 

@@ -66,14 +66,16 @@ final class AppFocusState {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.pdflite.app", category: "AppDelegate")
     private var activeSpaceObserver: NSObjectProtocol?
-    private var fullScreenObservers: [NSObjectProtocol] = []
+    private var windowObservers: [NSObjectProtocol] = []
+    private var appearanceObservation: NSKeyValueObservation?
 
     deinit {
+        appearanceObservation?.invalidate()
         if let activeSpaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(activeSpaceObserver)
         }
         let center = NotificationCenter.default
-        for observer in fullScreenObservers {
+        for observer in windowObservers {
             center.removeObserver(observer)
         }
     }
@@ -82,9 +84,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DocumentOpener.flushAllReadingStates()
+        return .terminateNow
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        DocumentOpener.flushAllReadingStates()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Sync window chrome with the stored appearance choice before any window draws.
         ReaderSettings.shared.applyAppAppearance()
+
+        // Keep following macOS changes while the preference is 跟随系统. Explicit in-app
+        // changes also synchronize directly from ReaderSettings.applyAppAppearance().
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { _, _ in
+            Task { @MainActor in
+                AppAppearanceSynchronizer.scheduleSynchronization()
+            }
+        }
 
         // Space switches don't fire applicationDidBecomeActive when PDFLite is already frontmost
         // — we have to listen for the workspace notification ourselves and re-assert key window
@@ -97,45 +116,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(180))
+                AppAppearanceSynchronizer.scheduleSynchronization()
                 AppFocusState.shared.reassertDocumentWindowFocus()
             }
         }
 
         let center = NotificationCenter.default
-        fullScreenObservers = [
+        windowObservers = [
             center.addObserver(
                 forName: NSWindow.willEnterFullScreenNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] notification in
-                self?.handleFullScreenTransition(notification, transitioning: true)
+            ) { notification in
+                Self.handleFullScreenTransition(notification, transitioning: true)
             },
             center.addObserver(
                 forName: NSWindow.willExitFullScreenNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] notification in
-                self?.handleFullScreenTransition(notification, transitioning: true)
+            ) { notification in
+                Self.handleFullScreenTransition(notification, transitioning: true)
             },
             center.addObserver(
                 forName: NSWindow.didEnterFullScreenNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] notification in
-                self?.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
+            ) { notification in
+                Self.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
             },
             center.addObserver(
                 forName: NSWindow.didExitFullScreenNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] notification in
-                self?.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
+            ) { notification in
+                Self.handleFullScreenTransition(notification, transitioning: false, reassertAfter: true)
+            },
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    AppAppearanceSynchronizer.scheduleSynchronization()
+                }
             }
         ]
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        logger.info("application(open:) received \(urls.map(\.absoluteString).joined(separator: " "), privacy: .public)")
+        logger.info("application(open:) received \(urls.count) URL(s)")
         for url in urls {
             if url.isFileURL {
                 if url.pathExtension.lowercased() == "pdf" {
@@ -151,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        AppAppearanceSynchronizer.scheduleSynchronization()
         AppFocusState.shared.reassertDocumentWindowFocus()
         // Background launches defer SwiftUI's initial window until first activation; if it
         // still hasn't materialized shortly after, force one so the app is never a windowless
@@ -158,13 +188,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DocumentOpener.scheduleBootstrapCheck()
     }
 
-    private func handleFullScreenTransition(_ notification: Notification,
-                                            transitioning: Bool,
-                                            reassertAfter: Bool = false) {
+    private static func handleFullScreenTransition(_ notification: Notification,
+                                                   transitioning: Bool,
+                                                   reassertAfter: Bool = false) {
         guard let window = notification.object as? NSWindow else { return }
         Task { @MainActor in
             AppFocusState.shared.setFullScreenTransitioning(window, transitioning)
             guard reassertAfter else { return }
+            // The native fullscreen title/tab strip is created asynchronously during the
+            // transition, so schedule follow-up passes after the auxiliary window exists.
+            AppAppearanceSynchronizer.scheduleSynchronization()
             try? await Task.sleep(for: .milliseconds(120))
             AppFocusState.shared.reassertDocumentWindowFocus()
         }
@@ -178,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum DocumentOpener {
     private static let logger = Logger(subsystem: "com.pdflite.app", category: "DocumentOpener")
     private static var pendingURLs: [URL] = []
+    private static var pendingWindowCount = 0
     private static var handlers: [() -> DocumentSession?] = []
     /// True while a bootstrap window request is in flight — window materialization takes
     /// ~100ms, during which a second "no windows yet!" check must not fire another one.
@@ -185,18 +219,21 @@ enum DocumentOpener {
     /// Spawns a fresh reader window (wired to SwiftUI's openWindow by ReaderWindowView).
     static var spawnWindow: (() -> Void)?
 
-    static func requestOpen(url: URL) {
+    static func requestOpen(url: URL, preferring preferred: DocumentSession? = nil) {
         let standardized = url.standardizedFileURL
         pruneHandlers()
         logger.info("requestOpen \(standardized.lastPathComponent, privacy: .public): sessions=\(liveSessions().count) pending=\(pendingURLs.count) spawnWired=\(spawnWindow != nil)")
 
         // Already open in some window? Focus it instead of opening a duplicate.
-        if let existing = liveSessions().first(where: { $0.fileURL == standardized }) {
+        if let existing = liveSessions().first(where: { $0.requestedURL == standardized }) {
             existing.hostWindow?.makeKeyAndOrderFront(nil)
             return
         }
 
-        if let empty = liveSessions().first(where: { $0.canAcceptOpen }) {
+        guard !pendingURLs.contains(standardized) else { return }
+        let available = preferred.flatMap { $0.canAcceptOpen ? $0 : nil }
+            ?? liveSessions().first(where: { $0.canAcceptOpen })
+        if let empty = available {
             empty.openDocument(url: standardized)
             empty.hostWindow?.makeKeyAndOrderFront(nil)
             return
@@ -204,7 +241,7 @@ enum DocumentOpener {
 
         pendingURLs.append(standardized)
         if spawnWindow != nil {
-            spawnWindow?()
+            spawnPendingWindows()
         } else {
             // No window has ever appeared (cold launch). SwiftUI usually creates the initial
             // window itself within a few hundred ms — check later instead of racing it, or we
@@ -253,11 +290,7 @@ enum DocumentOpener {
             let urls = panel.urls
             Task { @MainActor in
                 for url in urls {
-                    if let preferred, preferred.canAcceptOpen {
-                        preferred.openDocument(url: url)
-                    } else {
-                        requestOpen(url: url)
-                    }
+                    requestOpen(url: url, preferring: preferred)
                 }
             }
         }
@@ -266,7 +299,9 @@ enum DocumentOpener {
     /// Sessions register here so they can be discovered by the open handler.
     static func register(_ session: DocumentSession) {
         pruneHandlers()
+        guard !liveSessions().contains(where: { $0 === session }) else { return }
         handlers.append({ [weak session] in session })
+        pendingWindowCount = max(0, pendingWindowCount - 1)
         bootstrapInFlight = false
         logger.info("register: sessions=\(handlers.count) canAccept=\(session.canAcceptOpen) pending=\(pendingURLs.count)")
         AppFocusState.shared.activate(session)
@@ -282,8 +317,22 @@ enum DocumentOpener {
                 session?.hostWindow?.makeKeyAndOrderFront(nil)
             }
         }
-        if !pendingURLs.isEmpty {
-            spawnWindow?()
+        spawnPendingWindows()
+    }
+
+    static func unregister(_ session: DocumentSession) {
+        handlers.removeAll { $0() == nil || $0() === session }
+    }
+
+    static func flushAllReadingStates() {
+        for session in liveSessions() { session.flushReadingState() }
+    }
+
+    private static func spawnPendingWindows() {
+        guard let spawnWindow else { return }
+        while pendingWindowCount < pendingURLs.count {
+            pendingWindowCount += 1
+            spawnWindow()
         }
     }
 

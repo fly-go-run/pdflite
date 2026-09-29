@@ -34,7 +34,7 @@ struct TranslationInspector: View {
         if let translation = session.translation.current {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Label("当前选区", systemImage: "text.cursor")
+                    Label(session.translationMatchingCurrentSelection == nil ? "最近翻译" : "当前选区", systemImage: "text.cursor")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if let pageIndex = translation.pageIndex {

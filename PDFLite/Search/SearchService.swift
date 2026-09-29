@@ -6,6 +6,8 @@ import PDFKit
 @Observable
 final class SearchService {
     var query: String = ""
+    @ObservationIgnored var onNavigate: ((PDFSelection) -> Void)?
+    @ObservationIgnored var onClear: (() -> Void)?
     private(set) var results: [PDFSelection] = []
     private(set) var currentIndex: Int = 0
     private(set) var isSearching: Bool = false
@@ -86,15 +88,18 @@ final class SearchService {
         guard !results.isEmpty else { return }
         currentIndex = (currentIndex + 1) % results.count
         navigationRevision += 1
+        if let current = currentSelection() { onNavigate?(current) }
     }
 
     func previous() {
         guard !results.isEmpty else { return }
         currentIndex = (currentIndex - 1 + results.count) % results.count
         navigationRevision += 1
+        if let current = currentSelection() { onNavigate?(current) }
     }
 
     func clear() {
+        onClear?()
         debounceTask?.cancel()
         cancelOngoingFind()
         query = ""
@@ -129,6 +134,7 @@ final class SearchService {
         if isFirstFlush {
             currentIndex = 0
             navigationRevision += 1
+            if let current = currentSelection() { onNavigate?(current) }
         }
     }
 

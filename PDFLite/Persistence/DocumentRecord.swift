@@ -15,6 +15,8 @@ struct DocumentRecord: Codable, FetchableRecord, MutablePersistableRecord, Equat
     var lastZoom: Double?
     var lastScrollY: Double?
     var displayMode: Int?
+    var lastScrollX: Double? = nil
+    var lastAutoScales: Bool? = nil
     var createdAt: Date
     var updatedAt: Date
 
@@ -29,6 +31,8 @@ struct DocumentRecord: Codable, FetchableRecord, MutablePersistableRecord, Equat
         case lastZoom = "last_zoom"
         case lastScrollY = "last_scroll_y"
         case displayMode = "display_mode"
+        case lastScrollX = "last_scroll_x"
+        case lastAutoScales = "last_auto_scales"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

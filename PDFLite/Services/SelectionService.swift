@@ -7,6 +7,7 @@ struct PageSelection {
     let pageIndex: Int
     let page: PDFPage
     let lineRects: [CGRect]
+    let text: String
 }
 
 /// Snapshot of the user's current selection. May span multiple pages — `pages` is ordered by
@@ -59,7 +60,7 @@ enum SelectionService {
                     pageIndex: document.index(for: page),
                     page: page,
                     rect: rect,
-                    text: (selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    text: text(in: selection, on: page)
                 ))
             }
         } else {
@@ -98,6 +99,7 @@ enum SelectionService {
         // make a full-page selection quadratic in its line count.
         var rawTextLines: [String] = []
         var pageRects: [Int: [CGRect]] = [:]
+        var pageText: [Int: String] = [:]
         var pageForIndex: [Int: PDFPage] = [:]
         var pageOrder: [Int] = []
         var prev: LineEntry?
@@ -112,10 +114,15 @@ enum SelectionService {
                     let gap = prev.rect.minY - entry.rect.maxY
                     isParagraphBreak = gap > paragraphGapThreshold
                 }
-                rawTextLines.append(isParagraphBreak ? "\n\n" : "\n")
+                let separator = isParagraphBreak ? "\n\n" : "\n"
+                rawTextLines.append(separator)
+                if entry.pageIndex == prev.pageIndex {
+                    pageText[entry.pageIndex, default: ""].append(separator)
+                }
             }
             if !entry.text.isEmpty {
                 rawTextLines.append(entry.text)
+                pageText[entry.pageIndex, default: ""].append(entry.text)
             }
 
             // Track per-page rects.
@@ -133,10 +140,23 @@ enum SelectionService {
 
         let pages: [PageSelection] = pageOrder.compactMap { index in
             guard let page = pageForIndex[index], let rects = pageRects[index] else { return nil }
-            return PageSelection(pageIndex: index, page: page, lineRects: rects)
+            return PageSelection(pageIndex: index, page: page, lineRects: rects,
+                                 text: (pageText[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         }
         guard !pages.isEmpty else { return nil }
 
         return SelectionSnapshot(pages: pages, rawText: rawText)
+    }
+
+    /// Use PDFKit's character ranges when line splitting is unavailable. A multi-page
+    /// selection's `string` includes all pages and must never be assigned to each page.
+    private static func text(in selection: PDFSelection, on page: PDFPage) -> String {
+        guard let source = page.string as NSString? else { return "" }
+        return (0..<selection.numberOfTextRanges(on: page)).compactMap { index in
+            let range = selection.range(at: index, on: page)
+            guard range.location != NSNotFound, range.location <= source.length,
+                  range.length <= source.length - range.location else { return nil }
+            return source.substring(with: range)
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
