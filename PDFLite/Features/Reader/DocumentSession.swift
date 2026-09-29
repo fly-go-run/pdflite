@@ -809,21 +809,28 @@ final class DocumentSession {
 
     /// Search the document for the figure/table caption matching the current selection and jump
     /// to it. Records nav history via goToSelection so Cmd-[ returns to the inline mention.
+    /// The text scan runs off the main actor, so the jump lands a beat later on a long document
+    /// (the panel simply stays until then — nothing new is shown). A newer jump supersedes the
+    /// one in flight, and a scan that finishes after the document was closed or replaced is
+    /// dropped instead of navigating.
     func jumpToCurrentFigure() {
         guard let document,
               let reference = currentFigureReference,
-              let snapshot = selection,
-              let target = FigureJumpService.locate(
-                reference,
-                in: document,
-                excluding: snapshot.pageIndex
-              )
-        else { return }
-        // Drop selection first so the floating panel dismisses; then jump.
-        pdfView?.clearTextSelection()
-        selection = nil
-        goToSelection(target)
+              let snapshot = selection else { return }
+        let sourcePage = snapshot.pageIndex
+        let generation = openGeneration
+        figureJumpTask?.cancel()
+        figureJumpTask = Task { [weak self] in
+            let target = await FigureJumpService.locate(reference, in: document, excluding: sourcePage)
+            guard !Task.isCancelled, let self, let target,
+                  self.openGeneration == generation, self.document === document else { return }
+            // Drop selection first so the floating panel dismisses; then jump.
+            self.pdfView?.clearTextSelection()
+            self.selection = nil
+            self.goToSelection(target)
+        }
     }
+    @ObservationIgnored private var figureJumpTask: Task<Void, Never>?
 
     // MARK: - Translation
 
