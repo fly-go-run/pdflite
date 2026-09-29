@@ -1,13 +1,13 @@
 # PDFLite 系统设计方案
 
 状态：唯一权威设计文档，后续 AI coding 以本文为准  
-更新时间：2026-09-14
+更新时间：2026-09-29
 
 本文档是 PDFLite 第一版的唯一权威设计文档。后续 AI coding、架构 review、Phase 拆分、依赖判断、参考项目选择，都以本文为准。`AGENTS.md` 只作为入口文件，旧方案文档放入 `docs/archive/`，不得作为实现基准。
 
 ## 0. 当前进度速览
 
-更新时间：2026-09-14
+更新时间：2026-09-29
 
 已交付（Phase 1–4 全部完成 + 若干增强）：
 
@@ -30,6 +30,13 @@ Phase 5 书架已交付。第一版已基本闭环，后续以质量、性能、
 7. 跨页高亮保留每页真实选区文本；目录跟随考虑同页目标坐标；译文面板区分当前选区与最近翻译。
 8. 测试只使用临时 PDF 和数据库，不修改用户阅读数据；性能预热、固定预览、搜索/标注列表另行评估。
 9. PDF 解析移至 `Services/ParsedDocument.swift`，目录定位归入 `Sidebar/OutlineItem.swift`；`ReadingLocation` 统一视口记录与恢复，仓库支持注入隔离测试数据。
+
+2026-09-29 打磨批次 A/B/C（已交付；128 项 XCTest + 32 项扩展 Node 测试，未引入依赖）：
+
+1. A · 浏览器联动与远程打开：深链 `pdflite://open?url=…[&title=…]` 支持可选页面标题（App 侧校验净化后命名，并跳过 arXiv API）；已下载文件直接打开、不弹面板；下载中收到的链接 FIFO 排队，单篇失败不阻断后续；站点归一化扩到 huggingface papers / alphaXiv / ACL / PMLR / CVF / NeurIPS，重定向后落到已知论文页会归一化重试一次（OpenReview、bioRxiv/medRxiv 对非浏览器请求返回人机验证，暂不支持）；书架/标签标题去掉 web 哈希后缀。扩展 1.1.0：操作徽标反馈（✓/!）、选中文字菜单、Alt+Shift+P、页面菜单仅在可下载的论文站出现、图标；纯逻辑放 `lib.js` 并用 `node --test` 测试，权限仍只有 contextMenus + activeTab。
+2. B · 翻译数据正确性：SSE 流仅在 `[DONE]` 或 `finish_reason == "stop"` 时视为完成，`length` / 其他终止原因 / 无终止标记的 EOF 一律报错，不落库、不缓存；200 状态的 JSON 错误体解析为服务端错误；「重试」绕过缓存并原地替换同 (文档, 页, hash) 的缓存行（保留行 id，高亮绑定不丢）；配置按 mtime/size/inode 自动刷新，401/403 丢弃缓存；同页选区保持 PDFKit 阅读顺序（双栏不再错序）；ConfigLoader 保存时保留未知键、拒绝覆盖非法 JSON、文件 0600 出生、仅新建目录用 0700。
+3. C · 交互手感：搜索框 Return/⇧Return 在查询未变且有结果时前进/后退，⌘F 已开时重新聚焦并全选，关闭搜索后键盘焦点交还 PDFView；缺 API Key 显示一行提示 + 「打开设置」按钮（按 `TranslationErrorKind` 判断，JSON 格式说明在 设置→翻译）；打开文件超过 150ms 显示加载态并禁用书架卡片；阅读区通知条可关闭，瞬时通知 6s 自清、持久状态类通知不自清（`NoticeBoard`）。
+4. 本批未做（已评估，待决策）：浏览器登录态/付费墙 PDF 下载（需 `chrome.downloads`）、替代深链的本机通信通道、自动接管 PDF 链接、选区长度上限（⌘A + 自动翻译会上传全文，与 §9 有冲突）、搜索高亮增量着色与上限、阅读位置恢复的 `viewRevision` 启发式（移动文件后位置可能被改写，需真实视图测试）、旧版本已缓存的截断译文无修复入口。
 
 2026-07 体验修复与增强（Phase 6–8，已交付）：
 
@@ -396,7 +403,7 @@ TranslationService
 
 ConfigLoader：
 
-1. 从 `~/.config/pdflite/config.json` 读取（路径由 `AppPaths.translationConfigURL` 提供）。
+1. 从 `~/.config/pdflite/config.json` 读取（路径由 `AppPaths.configFileURL` 提供）。
 2. 不把 API Key 写入源码。
 3. 不把 API Key 写入 SQLite。
 4. 配置文件缺失时 UI 给出明确提示，并允许用户在 Settings 窗口直接填写后回写文件。
@@ -499,7 +506,7 @@ DeepSeek 配置：
 说明：
 
 1. SQLite 路径使用产品名 `PDFLite`，由 `AppPaths.databaseURL` 提供。
-2. 配置路径已统一为 `~/.config/pdflite/config.json`，由 `AppPaths.translationConfigURL` 提供。
+2. 配置路径已统一为 `~/.config/pdflite/config.json`，由 `AppPaths.configFileURL` 提供。
 3. API Key 不进入仓库，不进入 SQLite。
 
 ### 4.2 核心实体
@@ -896,6 +903,8 @@ SearchState
 ## 11. 测试策略
 
 2026-09 已执行：`PDFLiteTests/ReaderRegressionTests.swift` 的 12 项 XCTest 全部通过。覆盖多文件占位与去重、失败打开与取消、临时数据库降级提示、v6→v7 数据保留、同页位置返回栈、搜索起点与真实选区通知、关闭重开与适宽意图、重命名文件按内容恢复、跨页文本、引用匹配、目录坐标定位、删除标注失败时保留显示。测试目标不启动应用入口，只使用临时生成的 PDF 与独立 SQLite。
+
+2026-09-29 起测试增至 128 项 XCTest（新增：远程 URL 归一化/下载队列/下载落盘、SSE 流完成判定与错误映射、翻译服务缓存与重试、ConfigLoader、选区顺序、搜索提交语义、通知条生命周期）以及 32 项扩展 Node 测试（`node --test browser-extension/test/*.test.mjs`）。翻译相关测试全部使用 URLProtocol 桩、临时 SQLite 与临时配置文件，不触碰真实 `~/.config/pdflite` 与 Application Support。仍无测试覆盖：TextCleaner、迁移链 v1→v7 全量、ReferenceIndex/FigureJump 的真实论文启发式。
 
 运行：先 `xcodegen generate`，再 `xcodebuild -project PDFLite.xcodeproj -scheme PDFLite -configuration Debug -derivedDataPath build -destination 'platform=macOS' test`。
 
