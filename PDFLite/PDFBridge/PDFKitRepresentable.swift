@@ -46,6 +46,15 @@ struct PDFKitRepresentable: NSViewRepresentable {
         view.plainMouseDownHandler = { [weak coordinator = context.coordinator] in
             coordinator?.session?.dismissReferencePreview()
         }
+        view.userInteractionHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.session?.noteUserNavigation()
+        }
+        // SwiftUI hands over the view unsized; a pending reading-location restore waits for
+        // the first real size (see DocumentSession.restoreBridgeIfNeeded).
+        view.sizeBecameUsableHandler = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.session?.restoreBridgeIfNeeded(in: view)
+        }
 
         session.pdfView = view
         context.coordinator.attach(view: view)
@@ -246,7 +255,10 @@ struct PDFKitRepresentable: NSViewRepresentable {
         }
 
         @objc private func willStartLiveScroll(_ notification: Notification) {
-            // Finger just touched the trackpad. Direction unknown — warmup both sides at low priority.
+            // Finger just touched the trackpad (or grabbed the scroller): a user-driven scroll,
+            // unlike the bounds changes PDFKit makes on its own while laying out.
+            session?.noteUserNavigation()
+            // Direction unknown — warmup both sides at low priority.
             session?.requestPageWarmup(direction: .both, delayMilliseconds: 60)
         }
 

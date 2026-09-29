@@ -47,6 +47,20 @@ final class ReaderPDFView: PDFView {
     /// Called on any mouseDown that is NOT opening a reference preview. Used to dismiss
     /// transient panels (e.g. an open reference preview) on plain clicks in the document.
     var plainMouseDownHandler: (() -> Void)?
+    /// Fired before PDFKit acts on direct manipulation of the viewport: wheel / trackpad scroll,
+    /// pinch, keyboard, mouse. PDFKit's own layout notifications (first layout, auto-scale,
+    /// resize) look exactly like user scrolling at the notification level, so "the user moved
+    /// the view" can only be decided here, at the input.
+    var userInteractionHandler: (() -> Void)?
+    /// Fired once the frame goes from unusable (zero — SwiftUI creates the view before sizing
+    /// it) to a real size, so work that needs a laid-out viewport can wait for it.
+    var sizeBecameUsableHandler: (() -> Void)?
+
+    /// False until the view has a real size; PDFKit can't resolve a page-point destination
+    /// against a degenerate viewport.
+    var hasUsableSize: Bool {
+        frame.width > 1 && frame.height > 1
+    }
 
     override var acceptsFirstResponder: Bool {
         true
@@ -85,7 +99,23 @@ final class ReaderPDFView: PDFView {
         documentScrollView
     }
 
+    override func magnify(with event: NSEvent) {
+        userInteractionHandler?()
+        super.magnify(with: event)
+    }
+
+    override func smartMagnify(with event: NSEvent) {
+        userInteractionHandler?()
+        super.smartMagnify(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        userInteractionHandler?()
+        super.keyDown(with: event)
+    }
+
     override func scrollWheel(with event: NSEvent) {
+        userInteractionHandler?()
         // Command + scroll → zoom around the cursor.
         if event.modifierFlags.contains(.command) {
             applyCommandScrollZoom(event)
@@ -127,12 +157,16 @@ final class ReaderPDFView: PDFView {
 
     override func setFrameSize(_ newSize: NSSize) {
         let oldSize = frame.size
+        let wasUsable = hasUsableSize
         let anchor = shouldPreserveResizeAnchor(from: oldSize, to: newSize)
             ? captureVisibleResizeAnchor()
             : nil
 
         super.setFrameSize(newSize)
         restoreVisibleResizeAnchor(anchor)
+        if !wasUsable, hasUsableSize {
+            sizeBecameUsableHandler?()
+        }
     }
 
     override func resize(withOldSuperviewSize oldSize: NSSize) {
@@ -146,6 +180,7 @@ final class ReaderPDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        userInteractionHandler?()
         if let context = linkClickContext(at: event) {
             switch linkClickHandler?(context) ?? .passThrough {
             case .preview:

@@ -56,6 +56,12 @@ final class DocumentSession {
     @ObservationIgnored private let documentRepository: DocumentRepository
     @ObservationIgnored private let annotationRepository: AnnotationRepository
     @ObservationIgnored private let didOpenDocument: (URL) -> Void
+    /// Full-file content hash. Injectable so tests can hold the hash back and interleave view
+    /// attachment with it, the ordering that decides whether a moved file's saved position lands.
+    @ObservationIgnored private let fileHasher: @Sendable (URL) throws -> String
+    /// PDF parsing, injectable so tests can hand back documents PDFKit itself won't produce
+    /// (e.g. one with no pages) to exercise the open-failure paths.
+    @ObservationIgnored private let documentParser: @Sendable (URL) -> ParsedDocument?
     private(set) var document: PDFDocument?
     private(set) var documentId: Int64?
     private(set) var pageCount: Int = 0
@@ -69,7 +75,7 @@ final class DocumentSession {
     var displayMode: PDFDisplayMode = .singlePageContinuous {
         didSet {
             if oldValue != displayMode {
-                if !isRestoringLocation { viewRevision += 1 }
+                if !isRestoringLocation { userNavigationRevision += 1 }
                 scheduleSave()
                 schedulePageWarmup(direction: .both, delayMilliseconds: 250)
             }
@@ -136,7 +142,16 @@ final class DocumentSession {
     @ObservationIgnored private var isRestoringLocation = false
     @ObservationIgnored private var hasSearchOrigin = false
     @ObservationIgnored var isApplyingSearchSelection = false
-    @ObservationIgnored private var viewRevision = 0
+    /// Counts moments the USER took control of the viewport — scroll, pinch, keyboard, mouse, or a
+    /// navigation / zoom command — and nothing else. PDFKit's own first-layout, auto-scale and
+    /// resize notifications are indistinguishable from user scrolling at the notification level,
+    /// so they deliberately don't feed this counter; input is caught at `ReaderPDFView` and in
+    /// the session commands. The open pipeline compares it to decide whether a late-arriving
+    /// (hash-matched) reading location may still be applied.
+    @ObservationIgnored private var userNavigationRevision = 0
+    /// Page the view was presented on; a page change the input hooks didn't attribute (thumbnail
+    /// click, scroller drag) still counts as the user having moved on.
+    @ObservationIgnored private var presentedPageIndex = 0
 
     // Debounced reading-state save.
     @ObservationIgnored private let saveDebouncer = TrailingDebouncer()
@@ -179,10 +194,14 @@ final class DocumentSession {
 
     init(documentRepository: DocumentRepository = .shared,
          annotationRepository: AnnotationRepository = .shared,
-         didOpenDocument: @escaping (URL) -> Void = { RecentFilesService.shared.add($0) }) {
+         didOpenDocument: @escaping (URL) -> Void = { RecentFilesService.shared.add($0) },
+         fileHasher: @escaping @Sendable (URL) throws -> String = { try FileHash.sha256(of: $0) },
+         documentParser: @escaping @Sendable (URL) -> ParsedDocument? = { ParsedDocument.parse(url: $0) }) {
         self.documentRepository = documentRepository
         self.annotationRepository = annotationRepository
         self.didOpenDocument = didOpenDocument
+        self.fileHasher = fileHasher
+        self.documentParser = documentParser
         search.onNavigate = { [weak self] selection in self?.navigateSearchResult(selection) }
         search.onClear = { [weak self] in self?.hasSearchOrigin = false }
     }
@@ -208,12 +227,13 @@ final class DocumentSession {
         openGeneration += 1
         let generation = openGeneration
         let standardizedURL = url.standardizedFileURL
+        let parser = documentParser
 
         openTask = Task { [weak self] in
             // Parse the document and build the outline tree off the main thread — nothing else
             // can see this PDFDocument yet, so the worker thread owns it exclusively.
             let parsed: ParsedDocument? = await Task.detached(priority: .userInitiated) {
-                ParsedDocument.parse(url: standardizedURL)
+                parser(standardizedURL)
             }.value
 
             guard let self, !Task.isCancelled, self.openGeneration == generation else { return }
@@ -229,6 +249,12 @@ final class DocumentSession {
                 self.loadError = "PDFLite 第一版暂不支持加密 PDF"
                 return
             }
+            // A truncated / incomplete download can parse as a PDF with no pages at all. Treat it
+            // as a failed open: no blank "1 / 0" reader, no database row, no recents entry.
+            if parsed.document.pageCount == 0 {
+                self.loadError = "无法打开 PDF：\(standardizedURL.lastPathComponent) 不含任何页面，文件可能已损坏或下载不完整"
+                return
+            }
 
             // Fast path: restore reading state by URL so the document opens at the right page
             // immediately. The full-file hash (true identity) runs afterwards, off the render path.
@@ -236,11 +262,19 @@ final class DocumentSession {
             guard !Task.isCancelled, self.openGeneration == generation else { return }
 
             self.presentDocument(parsed, url: standardizedURL, provisional: provisional)
-            let presentationRevision = self.viewRevision
+            let presentationRevision = self.userNavigationRevision
 
-            let hashResult: Result<String, Error> = await Task.detached(priority: .utility) {
-                Result { try FileHash.sha256(of: standardizedURL) }
-            }.value
+            // Task.detached is not a child task, so cancelling the open (window closed, another
+            // file requested) must be forwarded by hand or a big file keeps being read to the end.
+            let hasher = self.fileHasher
+            let hashTask = Task.detached(priority: .utility) {
+                Result { try hasher(standardizedURL) }
+            }
+            let hashResult: Result<String, Error> = await withTaskCancellationHandler {
+                await hashTask.value
+            } onCancel: {
+                hashTask.cancel()
+            }
             guard !Task.isCancelled, self.openGeneration == generation else { return }
 
             await self.finishPersistence(url: standardizedURL,
@@ -265,6 +299,7 @@ final class DocumentSession {
         scannedHintDismissed = false
         pageCount = doc.pageCount
         currentPageIndex = max(0, min(doc.pageCount - 1, provisional?.lastPage ?? 0))
+        presentedPageIndex = currentPageIndex
         outlineRoot = parsed.outline
         outlineFlat = []
         if let children = parsed.outline?.children {
@@ -353,9 +388,16 @@ final class DocumentSession {
 
         // The URL row we restored from can turn out to belong to different content (file replaced
         // in place), or the hash may match a record under an old path (file moved). Re-apply the
-        // reading state that actually belongs to this content — but only if the user hasn't
-        // navigated away from the provisional position yet.
-        if record.id != provisional?.id, viewRevision == presentationRevision {
+        // reading state that actually belongs to this content — unless the user has taken control
+        // of the viewport since presentation. PDFKit's own layout notifications (which arrive
+        // between presentation and now) don't count; only input and commands do.
+        //
+        // Nothing is saved before this point (documentId was nil), and once the location is
+        // applied — or pending, in which case saves write the pending location back unchanged —
+        // a flush can't replace the record's saved position with a page the user never chose.
+        let userMoved = userNavigationRevision != presentationRevision
+            || currentPageIndex != presentedPageIndex
+        if record.id != provisional?.id, !userMoved {
             let location = ReadingLocation(record: record)
             if let pdfView, pdfView.document === doc, !needsBridgeRestore {
                 restoreLocation(location, in: pdfView)
@@ -430,8 +472,20 @@ final class DocumentSession {
 
     // MARK: - Bridge handshake
 
+    /// The user took control of the viewport — see `userNavigationRevision`. Called by the bridge
+    /// for direct input (scroll, pinch, keyboard, mouse) and by every navigation / zoom command.
+    func noteUserNavigation() {
+        userNavigationRevision += 1
+    }
+
     func restoreBridgeIfNeeded(in view: ReaderPDFView) {
         guard needsBridgeRestore, let location = pendingLocation else { return }
+        // SwiftUI runs the first updateNSView before it sizes the view. PDFKit lays a zero-sized
+        // view out against a degenerate viewport and settles on the page top, silently dropping
+        // the intra-page offset — so wait: `ReaderPDFView.sizeBecameUsableHandler` re-enters here
+        // on the first real size. Until then `currentNavigationEntry` keeps answering with the
+        // pending location, so history and flushes never see the unrestored view.
+        guard view.hasUsableSize else { return }
         needsBridgeRestore = false
         pendingLocation = nil
         restoreLocation(location, in: view)
@@ -500,11 +554,13 @@ final class DocumentSession {
 
     func nextPage() {
         guard canGoNext, let pdfView else { return }
+        noteUserNavigation()
         pdfView.goToNextPage(nil)
     }
 
     func previousPage() {
         guard canGoPrevious, let pdfView else { return }
+        noteUserNavigation()
         pdfView.goToPreviousPage(nil)
     }
 
@@ -545,11 +601,13 @@ final class DocumentSession {
 
     private func recordCurrentForHistory() {
         hasSearchOrigin = false
+        noteUserNavigation()
         navigation.recordJump(from: currentNavigationEntry())
     }
 
     private func applyNavigationEntry(_ entry: ReadingLocation) {
         guard let pdfView else { return }
+        noteUserNavigation()
         restoreLocation(entry, in: pdfView)
         scheduleSave()
     }
@@ -558,18 +616,21 @@ final class DocumentSession {
 
     func zoomIn() {
         guard let pdfView else { return }
+        noteUserNavigation()
         pdfView.autoScales = false
         pdfView.zoomIn(nil)
     }
 
     func zoomOut() {
         guard let pdfView else { return }
+        noteUserNavigation()
         pdfView.autoScales = false
         pdfView.zoomOut(nil)
     }
 
     func actualSize() {
         guard let pdfView else { return }
+        noteUserNavigation()
         pdfView.autoScales = false
         pdfView.scaleFactor = 1.0
         scheduleSave()
@@ -577,6 +638,7 @@ final class DocumentSession {
 
     func fitWidth() {
         guard let pdfView else { return }
+        noteUserNavigation()
         pdfView.autoScales = true
         scheduleSave()
     }
@@ -615,6 +677,7 @@ final class DocumentSession {
 
     private func navigateSearchResult(_ result: PDFSelection) {
         guard let pdfView else { return }
+        noteUserNavigation()
         if !hasSearchOrigin {
             navigation.recordJump(from: currentNavigationEntry())
             hasSearchOrigin = true
@@ -881,7 +944,6 @@ final class DocumentSession {
         guard index != currentPageIndex else { return }
         let direction: PDFPageWarmupDirection = index > currentPageIndex ? .forward : .backward
         currentPageIndex = index
-        if !isRestoringLocation { viewRevision += 1 }
         lastWarmupDirection = direction
         updateActiveOutlineItem()
         // A reference preview is anchored to a fixed screen point; once the page underneath it
@@ -895,7 +957,6 @@ final class DocumentSession {
 
     func handleScaleChanged(_ factor: CGFloat) {
         scaleFactor = factor
-        if !isRestoringLocation { viewRevision += 1 }
         scheduleSave()
         // PDFViewScaleChanged fires continuously during pinch / Cmd-scroll zoom; debounce here
         // instead of re-creating the warmup service's DispatchWorkItem on every tick.
@@ -907,7 +968,6 @@ final class DocumentSession {
     func handleScrollActivity() {
         guard document != nil else { return }
         isScrollActive = true
-        if !isRestoringLocation { viewRevision += 1 }
         if !isViewportScrolling {
             isViewportScrolling = true
         }
