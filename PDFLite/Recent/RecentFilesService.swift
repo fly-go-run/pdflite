@@ -7,7 +7,7 @@ struct RecentFile: Identifiable, Codable, Hashable {
     var lastOpenedAt: Date
 
     var id: String { url.standardizedFileURL.path }
-    var displayName: String { url.deletingPathExtension().lastPathComponent }
+    var displayName: String { RemoteDocumentLibrary.displayName(forFileName: url.lastPathComponent) }
 
     init(url: URL, lastOpenedAt: Date = Date()) {
         self.url = url

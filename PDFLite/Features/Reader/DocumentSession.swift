@@ -170,7 +170,7 @@ final class DocumentSession {
     var hasSelection: Bool { selection != nil }
 
     var title: String {
-        fileURL?.deletingPathExtension().lastPathComponent ?? "PDFLite"
+        fileURL.map { RemoteDocumentLibrary.displayName(forFileName: $0.lastPathComponent) } ?? "PDFLite"
     }
 
     init(documentRepository: DocumentRepository = .shared,
@@ -334,7 +334,7 @@ final class DocumentSession {
             record = try await documentRepository.upsert(
                 fileHash: hash,
                 fileURL: url,
-                title: url.deletingPathExtension().lastPathComponent,
+                title: RemoteDocumentLibrary.displayName(forFileName: url.lastPathComponent),
                 pageCount: doc.pageCount
             )
         } catch {
