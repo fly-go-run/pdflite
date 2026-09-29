@@ -67,31 +67,10 @@ struct PDFKitRepresentable: NSViewRepresentable {
         session.restoreBridgeIfNeeded(in: view)
 
         // Search highlights — driven by SearchService state. updateNSView runs on every observed
-        // session change (page turns, zoom ticks, streaming translation), so gate the recolor on
-        // the search revisions: with hundreds of matches, re-tinting them all on unrelated
-        // updates is pure repeat work.
-        let highlighted = session.search.results
-        if !highlighted.isEmpty {
-            let resultsChanged =
-                context.coordinator.lastAppliedResultsRevision != session.search.resultsRevision
-            let navChanged =
-                context.coordinator.lastAppliedSearchRevision != session.search.navigationRevision
-            if resultsChanged || navChanged {
-                context.coordinator.lastAppliedResultsRevision = session.search.resultsRevision
-                // Re-yellow everything: on navigation this also resets the previous current
-                // match from orange back to yellow.
-                for sel in highlighted { sel.color = .yellow }
-                context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
-                session.search.currentSelection()?.color = .orange
-                view.highlightedSelections = highlighted
-            }
-        } else {
-            context.coordinator.lastAppliedSearchRevision = session.search.navigationRevision
-            context.coordinator.lastAppliedResultsRevision = session.search.resultsRevision
-            if view.highlightedSelections != nil {
-                view.highlightedSelections = nil
-            }
-        }
+        // session change (page turns, zoom ticks, streaming translation), so the planner does the
+        // work incrementally: new results get tinted once, ⌘G recolours two selections, and
+        // highlightedSelections is only re-assigned when the result set itself changed.
+        context.coordinator.searchTint.sync(with: session.search, to: view)
     }
 
     static func dismantleNSView(_ view: ReaderPDFView, coordinator: Coordinator) {
@@ -104,8 +83,7 @@ struct PDFKitRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, PDFViewDelegate {
         weak var session: DocumentSession?
         weak var view: ReaderPDFView?
-        var lastAppliedSearchRevision: Int = -1
-        var lastAppliedResultsRevision: Int = -1
+        var searchTint = SearchTintPlanner()
         private let selectionDebouncer = TrailingDebouncer()
         private weak var observedClipView: NSClipView?
         private weak var observedScrollView: NSScrollView?

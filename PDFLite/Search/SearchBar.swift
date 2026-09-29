@@ -27,10 +27,11 @@ struct SearchBar: View {
                 }
 
             if session.search.hasResults {
-                Text("\(session.search.currentNumber) / \(session.search.totalResults)")
+                Text("\(session.search.currentNumber) / \(session.search.totalResultsLabel)")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .font(.system(size: 12))
+                    .help(countHelp)
 
                 if session.search.isSearching {
                     ProgressView()
@@ -86,6 +87,13 @@ struct SearchBar: View {
         .onChange(of: session.searchFocusRequest) { _, _ in
             focusField()
         }
+    }
+
+    /// Tooltip on the counter; when the list was cut off it says why and what to do about it.
+    private var countHelp: String {
+        session.search.isCapped
+            ? "匹配过多，仅列出前 \(session.search.totalResults) 个；请输入更具体的关键词"
+            : "当前匹配 / 全部匹配"
     }
 
     /// Return steps to the next match, ⇧Return to the previous one (see `SearchService.submit`).
