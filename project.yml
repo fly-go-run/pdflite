@@ -68,3 +68,37 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/../Frameworks"
+
+  PDFLiteTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    # Unhosted tests compile the same sources without launching the reader app or its data store.
+    sources:
+      - path: PDFLite
+        excludes:
+          - App/PDFLiteApp.swift
+          - Resources
+          - Info.plist
+      - path: PDFLiteTests
+    dependencies:
+      - package: GRDB
+        product: GRDB
+      - package: KeyboardShortcuts
+        product: KeyboardShortcuts
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: ""
+        PRODUCT_BUNDLE_IDENTIFIER: com.pdflite.tests
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+
+schemes:
+  PDFLite:
+    build:
+      targets:
+        PDFLite: all
+    test:
+      targets:
+        - PDFLiteTests
