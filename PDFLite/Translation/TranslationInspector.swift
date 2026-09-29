@@ -129,6 +129,11 @@ struct TranslationInspector: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        // Absent while streaming (that row offers 取消 instead) and for errors
+                        // (which have 重试): `canRetranslate` is only true for a finished result.
+                        if session.translation.canRetranslate {
+                            retranslateButton
+                        }
                         copyButton(text: translation.partial)
                     } else {
                         Spacer()
@@ -148,6 +153,21 @@ struct TranslationInspector: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
         }
+    }
+
+    /// Fetches the translation again and overwrites the saved one — the way out of a cached
+    /// translation that is wrong or cut short. No confirmation: it costs one request.
+    private var retranslateButton: some View {
+        Button {
+            session.retranslateCurrent()
+        } label: {
+            Label("重新翻译", systemImage: "arrow.triangle.2.circlepath")
+                .font(.system(size: 12))
+        }
+        .buttonStyle(.borderless)
+        .disabled(!session.translation.canRetranslate)
+        .accessibilityLabel("重新翻译")
+        .help("忽略已保存的译文，重新请求一次并覆盖")
     }
 
     private func copyButton(text: String) -> some View {

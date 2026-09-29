@@ -11,6 +11,19 @@ final class AnnotationService {
     static let defaultHighlightHex = "#FFFF0059"
     private static let userNamePrefix = "pdflite:"
 
+    /// Bounds on what one highlight may cover, derived from `SelectionLimits` so there is a single
+    /// notion of "too much selection". `DocumentSession` already refuses an oversized selection
+    /// before it gets here; these keep any other caller from creating thousands of annotations.
+    /// They are deliberately looser than the selection gate, so a real selection the gate admits
+    /// (≤ `maxCharacters` PDFKit characters over ≤ `maxPageSpan` pages) never trips them:
+    /// - Line rects: an ordinary page holds 60–100 lines, so one rect per 4 admitted characters is
+    ///   far above any real selection while still capping the annotation count in the low thousands.
+    /// - Characters: the snapshot text adds paragraph-break separators the gate does not count, so
+    ///   allow twice the gate's figure.
+    static let maxHighlightPages = SelectionLimits.maxPageSpan
+    static let maxHighlightLineRects = SelectionLimits.maxCharacters / 4
+    static let maxHighlightCharacters = SelectionLimits.maxCharacters * 2
+
     private weak var document: PDFDocument?
     /// Pages each highlight group touches, recorded at restore/create time so deleting a group
     /// only scans its own pages instead of every annotation in the document.
@@ -43,8 +56,11 @@ final class AnnotationService {
 
     /// Create runtime PDFAnnotations and the matching persistence records for `snapshot` — one
     /// AnnotationRecord per page touched, all sharing a fresh groupId. Caller is responsible for
-    /// inserting all records via the repository.
+    /// inserting all records via the repository. Returns `[]` (and adds nothing to any page) when
+    /// the snapshot is oversized — see `isWithinHighlightLimits` — the same "nothing created"
+    /// answer callers already handle for an empty snapshot.
     func createHighlight(snapshot: SelectionSnapshot, documentId: Int64) -> [AnnotationRecord] {
+        guard Self.isWithinHighlightLimits(snapshot) else { return [] }
         let groupId = UUID().uuidString
         let now = Date()
         var records: [AnnotationRecord] = []
@@ -84,6 +100,24 @@ final class AnnotationService {
         }
 
         return records
+    }
+
+    /// Whether `snapshot` is small enough to become highlights. Cheapest checks first: the flag
+    /// and page count cost nothing, the rect total is one pass over page-level arrays, and the
+    /// text length is only summed once the rest passed.
+    static func isWithinHighlightLimits(_ snapshot: SelectionSnapshot) -> Bool {
+        guard !snapshot.isTooLong, snapshot.pages.count <= maxHighlightPages else { return false }
+        var rectCount = 0
+        for page in snapshot.pages {
+            rectCount += page.lineRects.count
+            if rectCount > maxHighlightLineRects { return false }
+        }
+        var characterCount = 0
+        for page in snapshot.pages {
+            characterCount += page.text.utf16.count
+            if characterCount > maxHighlightCharacters { return false }
+        }
+        return true
     }
 
     /// Remove every PDFAnnotation belonging to `groupId` from the document. Scans only the pages

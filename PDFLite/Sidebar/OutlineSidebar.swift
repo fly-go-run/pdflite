@@ -112,13 +112,23 @@ private struct OutlineItemLabel: View {
 
 private struct OutlineItemLabelCore: View, Equatable {
     let item: OutlineItem
+    /// Copy of `item.id` for `==`: `item` holds a non-Sendable `PDFDestination`, so it can't be
+    /// read from a nonisolated context, while an immutable `String` can.
+    let itemID: String
     let isActive: Bool
     let session: DocumentSession
+
+    init(item: OutlineItem, isActive: Bool, session: DocumentSession) {
+        self.item = item
+        self.itemID = item.id
+        self.isActive = isActive
+        self.session = session
+    }
 
     // session is deliberately ignored: it's the same object for the window's lifetime and only
     // serves the tap action.
     nonisolated static func == (lhs: OutlineItemLabelCore, rhs: OutlineItemLabelCore) -> Bool {
-        lhs.item.id == rhs.item.id && lhs.isActive == rhs.isActive
+        lhs.itemID == rhs.itemID && lhs.isActive == rhs.isActive
     }
 
     var body: some View {

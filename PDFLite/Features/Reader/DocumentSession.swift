@@ -863,6 +863,13 @@ final class DocumentSession {
         translation.retryLast()
     }
 
+    /// "重新翻译": discard the cached translation of the current output and fetch a fresh one.
+    func retranslateCurrent() {
+        guard translation.canRetranslate else { return }
+        isTranslationInspectorVisible = true
+        translation.retranslate()
+    }
+
     /// Copy the current selection. An oversized one has no assembled text, so copying it here would
     /// blank the clipboard; the card hides its copy button then and ⌘C stays with PDFView.
     func copyCurrentSelection() {

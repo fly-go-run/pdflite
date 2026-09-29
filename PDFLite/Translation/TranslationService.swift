@@ -94,6 +94,16 @@ final class TranslationService {
         current?.errorMessage != nil && lastRequestSnapshot != nil
     }
 
+    /// True when the current output is a finished translation (streamed, cached, or a stream the
+    /// user cancelled after some text arrived) and we still know what was requested — the state in
+    /// which "重新翻译" is offered. Unlike `canRetry` this is not about errors: a cached row saved
+    /// by an older build from a truncated stream looks complete, so without this it could never
+    /// be refreshed.
+    var canRetranslate: Bool {
+        guard let current, lastRequestSnapshot != nil else { return false }
+        return !current.isStreaming && current.errorMessage == nil && !current.partial.isEmpty
+    }
+
     /// Re-run the last translation request (typically after a network / config error). Skips the
     /// cache read: the user is asking for a fresh answer, and a cached row is exactly what they
     /// just rejected (e.g. one saved by an older build from a truncated stream). A successful
@@ -104,6 +114,14 @@ final class TranslationService {
                   documentId: lastRequestDocumentId,
                   bypassCache: true,
                   onSaved: lastRequestOnSaved)
+    }
+
+    /// Fetch a fresh translation of a finished one ("重新翻译"). Same path as `retryLast()` — cache
+    /// skipped, stored row replaced in place — so a bad cached translation is corrected for every
+    /// later lookup, and bound highlights keep their row.
+    func retranslate() {
+        guard canRetranslate else { return }
+        retryLast()
     }
 
     // MARK: - Translate

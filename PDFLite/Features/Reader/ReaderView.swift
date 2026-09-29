@@ -85,18 +85,7 @@ struct ReaderView: View {
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button {
-                session.notices.dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
-                    // 24pt square: the glyph is small, the click target shouldn't be.
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .help("关闭提示")
-            .accessibilityLabel("关闭提示")
+            BannerCloseButton { session.notices.dismiss() }
         }
         .padding(.leading, 10)
         .padding(.trailing, 4)
@@ -111,19 +100,33 @@ struct ReaderView: View {
                 .foregroundStyle(.orange)
             Text("此 PDF 没有文本层（可能是扫描版），无法选词、翻译和搜索")
                 .font(.system(size: 12))
-            Button {
-                session.scannedHintDismissed = true
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.borderless)
+            BannerCloseButton { session.scannedHintDismissed = true }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .padding(.vertical, 3)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.orange.opacity(0.3)))
         .shadow(radius: 4, y: 2)
+    }
+}
+
+/// The ✕ of a dismissible banner over the reader (notice banner, scanned-PDF hint). The glyph is
+/// small but the click target is a 24pt square, and the button has a spoken label — one component
+/// so the banners can't drift apart again.
+private struct BannerCloseButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help("关闭提示")
+        .accessibilityLabel("关闭提示")
     }
 }
 

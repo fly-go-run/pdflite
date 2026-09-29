@@ -136,11 +136,13 @@ final class SearchService {
                 self.appendMatch(selection)
             }
         })
+        // Read only inside the main-queue block below, like `payload` above.
+        nonisolated(unsafe) weak let endingDocument = document
         observers.append(center.addObserver(
             forName: .PDFDocumentDidEndFind, object: document, queue: .main
-        ) { [weak self, weak document] _ in
+        ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.findDidEnd(generation: generation, documentIsFinding: document?.isFinding == true)
+                self?.findDidEnd(generation: generation, documentIsFinding: endingDocument?.isFinding == true)
             }
         })
 

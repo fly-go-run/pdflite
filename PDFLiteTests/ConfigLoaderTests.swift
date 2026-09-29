@@ -1,3 +1,4 @@
+import os
 import XCTest
 
 /// `ConfigLoader` against injected temp URLs only — the real ~/.config/pdflite is never touched.
@@ -135,13 +136,17 @@ final class ConfigLoaderTests: XCTestCase {
 
     func testFailedSaveDoesNotPostTheChangeNotification() throws {
         try write("not json")
-        var posted = false
+        // queue: nil delivers synchronously on the posting thread, but the block is @Sendable, so
+        // the flag lives in a lock-protected box rather than a captured var.
+        let posted = OSAllocatedUnfairLock(initialState: false)
         let token = NotificationCenter.default.addObserver(forName: ConfigLoader.configChangedNotification,
-                                                           object: nil, queue: nil) { _ in posted = true }
+                                                           object: nil, queue: nil) { _ in
+            posted.withLock { $0 = true }
+        }
         defer { NotificationCenter.default.removeObserver(token) }
 
         XCTAssertThrowsError(try ConfigLoader.save(config, to: configURL))
-        XCTAssertFalse(posted)
+        XCTAssertFalse(posted.withLock { $0 })
     }
 
     // MARK: - Permissions

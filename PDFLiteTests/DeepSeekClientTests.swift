@@ -131,13 +131,13 @@ final class DeepSeekClientTests: XCTestCase {
 
     func testUnparseableStrayBodyFallsBackToIncomplete() async {
         let outcome = await run(.init(headers: ["Content-Type": "text/html"], chunks: [Data("<html>oops</html>".utf8)]))
-        XCTAssertNotNil(incompleteReason(outcome.error))
+        XCTAssertNotNil(incompleteReason(outcome.error) as Any?)
     }
 
     func testStrayBodyAfterDeltasDoesNotMaskIncompleteness() async {
         let outcome = await run(.init(chunks: [SSE.delta("译"), Data("{\"error\":{\"message\":\"late\"}}\n".utf8)]))
         XCTAssertEqual(outcome.text, "译")
-        XCTAssertNotNil(incompleteReason(outcome.error))
+        XCTAssertNotNil(incompleteReason(outcome.error) as Any?)
     }
 
     // MARK: - HTTP status mapping
