@@ -198,6 +198,7 @@ struct ReaderWindowView: View {
             translation: session.translationMatchingCurrentSelection,
             figureReference: session.currentFigureReference,
             inspectorOpen: session.isTranslationInspectorVisible,
+            selectionTooLong: session.isSelectionTooLong,
             ownerWindow: session.pdfView?.window
         )
     }

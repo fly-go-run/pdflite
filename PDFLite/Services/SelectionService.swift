@@ -19,6 +19,18 @@ struct SelectionSnapshot {
     /// inside a paragraph and `\n\n` between paragraphs (large vertical gaps + page breaks).
     /// TextCleaner reads this and preserves the paragraph structure for the LLM.
     let rawText: String
+    /// The selection exceeded `SelectionLimits`, so no text was assembled and no per-line rects
+    /// were computed: `rawText` is empty and `pages` holds a single anchor entry (one bounding
+    /// rect on one page) that exists only so the floating card can be positioned. Such a snapshot
+    /// must never reach translation, highlighting or clipboard code — `DocumentSession` gates every
+    /// entry point on this flag.
+    let isTooLong: Bool
+
+    init(pages: [PageSelection], rawText: String, isTooLong: Bool = false) {
+        self.pages = pages
+        self.rawText = rawText
+        self.isTooLong = isTooLong
+    }
 
     var pageIndex: Int { pages.first?.pageIndex ?? 0 }
     var page: PDFPage { pages.first!.page }
@@ -26,16 +38,81 @@ struct SelectionSnapshot {
     var spansMultiplePages: Bool { pages.count > 1 }
 }
 
+/// How large a selection may be before it is treated as "not something the user meant to
+/// translate or highlight" (⌘A, or dragging across half a book). One place, because the cheap gate
+/// in `SelectionService`, the auto-action, the manual commands and the UI copy all speak about
+/// the same number.
+enum SelectionLimits {
+    /// Longest selection, in PDFKit characters (sum of the selection's text-range lengths, which
+    /// includes the newline between lines), that may be translated, highlighted or auto-actioned.
+    /// ~6000 is about one dense two-column paper page: room for any paragraph or a few of them,
+    /// well inside one DeepSeek request, and far below "the whole book". Design §9 allows only
+    /// text the user actively selected to leave the machine — a ⌘A must not qualify by accident.
+    static let maxCharacters = 6000
+
+    /// Widest page span that is examined at all. A page of ordinary paper text is 3–7k characters,
+    /// so a few full pages already pass `maxCharacters`; 12 is generous even for figure-heavy
+    /// stretches while keeping the probe bounded on a cold document (each probed page may make
+    /// PDFKit extract that page's text). Beyond it the selection is too long without looking at
+    /// any text.
+    static let maxPageSpan = 12
+
+    /// One-line refusal shown when the user asks for `action` ("翻译" / "高亮") on an oversized
+    /// selection.
+    static func tooLongMessage(for action: String) -> String {
+        "选区过长（超过约 \(maxCharacters) 字），请缩小范围后再\(action)"
+    }
+}
+
+enum SelectionSize: Equatable {
+    case withinLimit
+    case tooLong
+}
+
 enum SelectionService {
+    /// How many times the O(lines) pass (`selectionsByLine` + per-line text/rect extraction) has
+    /// run. A test seam: the size gate must return before that pass for an oversized selection,
+    /// and asserting on this counter proves it without depending on wall-clock time.
+    @MainActor private(set) static var linePassCount = 0
+
+    /// Cheap size gate. Only integer arithmetic over PDFKit's per-page text ranges (Apple:
+    /// https://developer.apple.com/documentation/pdfkit/pdfselection/pages,
+    /// https://developer.apple.com/documentation/pdfkit/pdfselection/numberoftextranges(on:),
+    /// https://developer.apple.com/documentation/pdfkit/pdfselection/range(at:on:)) — no string is
+    /// assembled and no line is visited. It bails out on the page count first, then as soon as the
+    /// running character total passes the limit, so its cost is bounded by
+    /// `SelectionLimits.maxPageSpan` pages no matter how large the selection is.
+    static func size(of selection: PDFSelection) -> SelectionSize {
+        let pages = selection.pages
+        if pages.count > SelectionLimits.maxPageSpan { return .tooLong }
+
+        var total = 0
+        for page in pages {
+            for index in 0..<selection.numberOfTextRanges(on: page) {
+                let range = selection.range(at: index, on: page)
+                guard range.location != NSNotFound else { continue }
+                total += range.length
+                if total > SelectionLimits.maxCharacters { return .tooLong }
+            }
+        }
+        return .withinLimit
+    }
+
     /// Build a snapshot from PDFView's current selection. Walks `selectionsByLine()`, orders by
     /// page (keeping PDFKit's order within a page), groups per page, and assembles a
-    /// paragraph-aware rawText using the line's vertical gap as the paragraph cue.
+    /// paragraph-aware rawText using the line's vertical gap as the paragraph cue. A selection
+    /// over `SelectionLimits` skips all of that and returns a flagged anchor-only snapshot.
     @MainActor
     static func snapshot(from pdfView: PDFView) -> SelectionSnapshot? {
         guard let selection = pdfView.currentSelection,
               !selection.pages.isEmpty else {
             return nil
         }
+
+        if size(of: selection) == .tooLong {
+            return tooLongSnapshot(for: selection, in: pdfView)
+        }
+        linePassCount += 1
 
         struct LineEntry {
             let pageIndex: Int
@@ -143,6 +220,29 @@ enum SelectionService {
         guard !pages.isEmpty else { return nil }
 
         return SelectionSnapshot(pages: pages, rawText: rawText)
+    }
+
+    /// Flagged snapshot for an oversized selection. The floating card still needs something to
+    /// hang off, so this computes exactly one rect with one `bounds(for:)` call: on the page the
+    /// reader is looking at when that page is part of the selection (⌘A from the middle of a
+    /// book), else on the selection's first page. Nil when neither has drawable bounds — then
+    /// there is nothing to show a card next to and nothing actionable either.
+    @MainActor
+    private static func tooLongSnapshot(for selection: PDFSelection, in pdfView: PDFView) -> SelectionSnapshot? {
+        let pages = selection.pages
+        var candidates: [PDFPage] = []
+        if let current = pdfView.currentPage, pages.contains(current) { candidates.append(current) }
+        if let first = pages.first { candidates.append(first) }
+
+        for page in candidates {
+            guard let document = page.document else { continue }
+            let rect = selection.bounds(for: page)
+            guard rect.width > 0.5, rect.height > 0.5 else { continue }
+            let anchor = PageSelection(pageIndex: document.index(for: page), page: page,
+                                       lineRects: [rect], text: "")
+            return SelectionSnapshot(pages: [anchor], rawText: "", isTooLong: true)
+        }
+        return nil
     }
 
     /// Orders `items` by page index only. The sort is stable, so items on the same page keep

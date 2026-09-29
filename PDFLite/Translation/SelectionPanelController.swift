@@ -17,17 +17,25 @@ final class SelectionPanelController {
     var onRetry: (() -> Void)?
     var onJumpToFigure: (() -> Void)?
 
+    /// Whether the selection the card is next to is oversized. Set by `present` (the only call
+    /// that follows a selection change) and reused by `update`, so a streamed token of an older
+    /// translation can't flip an oversized selection's hint back into the action buttons.
+    private var isSelectionTooLong = false
+
     /// Show or move the panel so it sits just below `screenRect` (the screen-space bounds of the
     /// current selection). Translation state, if any, is rendered in the preview area;
     /// `figureReference` is non-nil when the selection looks like "Figure 3" / "Table 2" and
-    /// adds a jump button to the action row.
+    /// adds a jump button to the action row. `selectionTooLong` swaps the action row for a
+    /// one-line hint.
     func present(
         near screenRect: NSRect,
         translation: TranslationOutput?,
         figureReference: FigureReference?,
         inspectorOpen: Bool,
+        selectionTooLong: Bool = false,
         ownerWindow: NSWindow?
     ) {
+        isSelectionTooLong = selectionTooLong
         let view = makeView(
             translation: translation,
             figureReference: figureReference,
@@ -44,7 +52,8 @@ final class SelectionPanelController {
         let size = panelSize(
             translation: translation,
             figureReference: figureReference,
-            inspectorOpen: inspectorOpen
+            inspectorOpen: inspectorOpen,
+            selectionTooLong: selectionTooLong
         )
         let origin = clampedOrigin(for: size, near: screenRect)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
@@ -89,6 +98,7 @@ final class SelectionPanelController {
             translation: translation,
             figureReference: figureReference,
             inspectorOpen: inspectorOpen,
+            isSelectionTooLong: isSelectionTooLong,
             onTranslate: { [weak self] in self?.onTranslate?() },
             onHighlight: { [weak self] in self?.onHighlight?() },
             onCopy: { [weak self] in self?.onCopy?() },
@@ -139,8 +149,14 @@ final class SelectionPanelController {
     private func panelSize(
         translation: TranslationOutput?,
         figureReference: FigureReference?,
-        inspectorOpen: Bool
+        inspectorOpen: Bool,
+        selectionTooLong: Bool
     ) -> NSSize {
+        // A single hint line: same footprint as the plain action row.
+        if selectionTooLong {
+            return NSSize(width: inspectorOpen ? 180 : 300, height: 44)
+        }
+
         // Inspector-open compact mode: icon-only buttons, no preview row. Stay narrow so the
         // panel doesn't shadow the user's reading area.
         if inspectorOpen {

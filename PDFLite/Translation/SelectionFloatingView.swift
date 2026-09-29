@@ -7,10 +7,14 @@ import SwiftUI
 /// - When the Inspector is *open*, the panel collapses to icon-only buttons and skips the
 ///   preview entirely — duplicating the streaming body next to the selection while it's already
 ///   showing in the Inspector is just visual noise (per Gemini review + §3.9).
+/// An oversized selection (`SelectionLimits`) replaces the whole action row with a one-line hint:
+/// translate and highlight are refused for it, and copy is dropped too because the snapshot holds
+/// no text for it (⌘C in the PDF view still copies the real selection).
 struct SelectionFloatingView: View {
     let translation: TranslationOutput?
     let figureReference: FigureReference?
     let inspectorOpen: Bool
+    let isSelectionTooLong: Bool
     let onTranslate: () -> Void
     let onHighlight: () -> Void
     let onCopy: () -> Void
@@ -20,6 +24,38 @@ struct SelectionFloatingView: View {
     let onJumpToFigure: () -> Void
 
     var body: some View {
+        Group {
+            if isSelectionTooLong {
+                tooLongHint
+            } else {
+                actions
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.16)))
+        .frame(
+            minWidth: inspectorOpen ? 130 : 220,
+            idealWidth: inspectorOpen ? 180 : 300,
+            maxWidth: inspectorOpen ? 240 : 330
+        )
+    }
+
+    /// One line, no buttons. The compact (Inspector open) card is only ~180pt wide, so it gets
+    /// the short wording; the Inspector itself carries the full sentence with the limit.
+    private var tooLongHint: some View {
+        Text(inspectorOpen ? "选区过长，请缩小范围" : "选区过长（超过约 \(SelectionLimits.maxCharacters) 字），请缩小范围")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+            .help(SelectionLimits.tooLongMessage(for: "翻译"))
+    }
+
+    private var actions: some View {
         VStack(alignment: .leading, spacing: 7) {
             if !inspectorOpen, let translation, shouldShowPreview(translation) {
                 preview(for: translation)
@@ -55,15 +91,6 @@ struct SelectionFloatingView: View {
                 }
             }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.16)))
-        .frame(
-            minWidth: inspectorOpen ? 130 : 220,
-            idealWidth: inspectorOpen ? 180 : 300,
-            maxWidth: inspectorOpen ? 240 : 330
-        )
     }
 
     private func actionButton(

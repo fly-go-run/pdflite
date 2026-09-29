@@ -20,8 +20,19 @@ struct TranslationInspector: View {
             Divider()
 
             ScrollView {
-                currentSection
-                    .padding(12)
+                VStack(alignment: .leading, spacing: 10) {
+                    if session.isSelectionTooLong {
+                        // Same wording as the refusal notice: translate is unavailable for this
+                        // selection, whatever an older translation below still shows.
+                        Label(SelectionLimits.tooLongMessage(for: "翻译"),
+                              systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    currentSection
+                }
+                .padding(12)
             }
         }
         .onChange(of: session.translation.current?.startedAt) { _, _ in

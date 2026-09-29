@@ -157,14 +157,18 @@ final class DocumentSession {
     var hasDocument: Bool { document != nil }
     var canAcceptOpen: Bool { document == nil && fileURL == nil && openingURL == nil }
     var requestedURL: URL? { openingURL ?? fileURL }
-    var canHighlight: Bool { hasSelection && annotationsReady && documentId != nil && documentRepository.isPersistent }
+    var canHighlight: Bool {
+        hasSelection && !isSelectionTooLong && annotationsReady && documentId != nil && documentRepository.isPersistent
+    }
     /// Why highlighting can't run right now, as a notice; nil when nothing is in the way.
     private var highlightBlocker: SessionNotice? {
         if !documentRepository.isPersistent { return .annotationsNotSaved }
         if hasDocument && (!annotationsReady || documentId == nil) { return .preparingAnnotations }
         return nil
     }
-    var highlightHelp: String { highlightBlocker?.message ?? "高亮选区" }
+    var highlightHelp: String {
+        isSelectionTooLong ? SelectionLimits.tooLongMessage(for: "高亮") : (highlightBlocker?.message ?? "高亮选区")
+    }
     var canGoNext: Bool { hasDocument && currentPageIndex < pageCount - 1 }
     var canGoPrevious: Bool { hasDocument && currentPageIndex > 0 }
     var hasSelection: Bool { selection != nil }
@@ -628,6 +632,12 @@ final class DocumentSession {
     /// When the auto-translate-on-highlight setting is on, also kicks off a translation and
     /// writes the resulting translation row id back onto the annotation when the request lands.
     func highlightSelection() {
+        // An oversized selection (⌘A…) would become one annotation per line — refuse it up front,
+        // before any blocker notice, with the reason the user can act on.
+        if isSelectionTooLong {
+            notices.post(.transient(SelectionLimits.tooLongMessage(for: "高亮")))
+            return
+        }
         guard canHighlight, let snapshot = selection,
               let documentId, let service = annotationService else {
             if hasSelection, persistenceNotice == nil, let blocker = highlightBlocker {
@@ -725,7 +735,7 @@ final class DocumentSession {
     /// per selectionRevision — the floating panel asks for it on every refresh, including once per
     /// streamed translation token, and the regex parse only depends on the selection text.
     var currentFigureReference: FigureReference? {
-        guard let snapshot = selection else { return nil }
+        guard let snapshot = selection, !snapshot.isTooLong else { return nil }
         if let cached = figureReferenceCache, cached.revision == selectionRevision {
             return cached.value
         }
@@ -754,9 +764,19 @@ final class DocumentSession {
 
     // MARK: - Translation
 
-    /// Translate the current selection. No-op if there is no selection.
+    /// The selection is over `SelectionLimits`: it carries no text, and translation, highlighting
+    /// and the auto-actions all refuse it. The floating card and the Inspector show why.
+    var isSelectionTooLong: Bool { selection?.isTooLong == true }
+
+    /// Translate the current selection. No-op if there is no selection; an oversized one is
+    /// refused with a notice and never reaches the network (design §9: only text the user
+    /// actively chose leaves the machine).
     func translateCurrentSelection() {
         guard let snapshot = selection else { return }
+        guard !snapshot.isTooLong else {
+            notices.post(.transient(SelectionLimits.tooLongMessage(for: "翻译")))
+            return
+        }
         isTranslationInspectorVisible = true
         translation.translate(snapshot: snapshot, documentId: documentId)
     }
@@ -773,8 +793,10 @@ final class DocumentSession {
         translation.retryLast()
     }
 
+    /// Copy the current selection. An oversized one has no assembled text, so copying it here would
+    /// blank the clipboard; the card hides its copy button then and ⌘C stays with PDFView.
     func copyCurrentSelection() {
-        guard let snapshot = selection else { return }
+        guard let snapshot = selection, !snapshot.isTooLong else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(snapshot.rawText, forType: .string)
@@ -922,7 +944,9 @@ final class DocumentSession {
     /// selection settles (i.e. they stopped dragging). The closure re-checks `selection` to
     /// ensure the user hasn't moved on before triggering.
     private func scheduleAutoSelectionActionIfNeeded(for snapshot: SelectionSnapshot?) {
-        guard let snapshot,
+        // An oversized selection (⌘A) must never trigger the auto-action: translating it would
+        // upload the document, highlighting it would create an annotation per line.
+        guard let snapshot, !snapshot.isTooLong,
               snapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
             return
         }
