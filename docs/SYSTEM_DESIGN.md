@@ -36,7 +36,13 @@ Phase 5 书架已交付。第一版已基本闭环，后续以质量、性能、
 1. A · 浏览器联动与远程打开：深链 `pdflite://open?url=…[&title=…]` 支持可选页面标题（App 侧校验净化后命名，并跳过 arXiv API）；已下载文件直接打开、不弹面板；下载中收到的链接 FIFO 排队，单篇失败不阻断后续；站点归一化扩到 huggingface papers / alphaXiv / ACL / PMLR / CVF / NeurIPS，重定向后落到已知论文页会归一化重试一次（OpenReview、bioRxiv/medRxiv 对非浏览器请求返回人机验证，暂不支持）；书架/标签标题去掉 web 哈希后缀。扩展 1.1.0：操作徽标反馈（✓/!）、选中文字菜单、Alt+Shift+P、页面菜单仅在可下载的论文站出现、图标；纯逻辑放 `lib.js` 并用 `node --test` 测试，权限仍只有 contextMenus + activeTab。
 2. B · 翻译数据正确性：SSE 流仅在 `[DONE]` 或 `finish_reason == "stop"` 时视为完成，`length` / 其他终止原因 / 无终止标记的 EOF 一律报错，不落库、不缓存；200 状态的 JSON 错误体解析为服务端错误；「重试」绕过缓存并原地替换同 (文档, 页, hash) 的缓存行（保留行 id，高亮绑定不丢）；配置按 mtime/size/inode 自动刷新，401/403 丢弃缓存；同页选区保持 PDFKit 阅读顺序（双栏不再错序）；ConfigLoader 保存时保留未知键、拒绝覆盖非法 JSON、文件 0600 出生、仅新建目录用 0700。
 3. C · 交互手感：搜索框 Return/⇧Return 在查询未变且有结果时前进/后退，⌘F 已开时重新聚焦并全选，关闭搜索后键盘焦点交还 PDFView；缺 API Key 显示一行提示 + 「打开设置」按钮（按 `TranslationErrorKind` 判断，JSON 格式说明在 设置→翻译）；打开文件超过 150ms 显示加载态并禁用书架卡片；阅读区通知条可关闭，瞬时通知 6s 自清、持久状态类通知不自清（`NoticeBoard`）。
-4. 本批未做（已评估，待决策）：浏览器登录态/付费墙 PDF 下载（需 `chrome.downloads`）、替代深链的本机通信通道、自动接管 PDF 链接、选区长度上限（⌘A + 自动翻译会上传全文，与 §9 有冲突）、搜索高亮增量着色与上限、阅读位置恢复的 `viewRevision` 启发式（移动文件后位置可能被改写，需真实视图测试）、旧版本已缓存的截断译文无修复入口。
+4. 本批未做（已评估，待决策）：浏览器登录态/付费墙 PDF 下载（需 `chrome.downloads`）、替代深链的本机通信通道、自动接管 PDF 链接、旧版本已缓存的截断译文无修复入口、ThumbnailSidebar 点击未接入用户操作计数（目前仅靠页码变化兜底）、⌘A 首次全选约 750ms 的 PDFKit 停顿（需在 `ReaderPDFView` 覆写 `selectAll`）。
+
+2026-09-29 打磨批次 D（已交付；177 项 XCTest，未引入依赖）：
+
+1. D1 · 阅读位置恢复：先在未改动代码上复现——哈希落地前 `viewRevision` 被 PDFKit 自身的首次布局通知从 0 推到 8（全是 scroll/scale 通知，无任何用户操作），移动/重命名文件后按内容哈希命中的旧位置被跳过，随后 flush 还会把旧记录改写成第 0 页。修复：计数改为 `userNavigationRevision`，只由用户输入（`ReaderPDFView` 的 scrollWheel/magnify/keyDown/mouseDown 与 live scroll 钩子）和导航/缩放命令推进，PDFKit 通知不再计入；哈希命中的位置仅在用户未操作时应用，并以页码变化兜底。同时修复同路径重开时页内位置回到页顶的问题：首个 `updateNSView` 时视图尺寸为 0，点级恢复现等到首次可用尺寸再执行。另：`FileHash` 分块 `autoreleasepool` 并响应取消（取消会转发到哈希任务）；`pageCount == 0` 视为打开失败（不建库行、不进最近打开）。
+2. D2 · 选区长度上限：`SelectionLimits`（约 6000 字或跨页超过 12 页）为「过长」；`SelectionService` 先用仅看 PDFKit 文本区间长度的廉价整数判断，不通过则返回不含文本、只带一个锚点 rect 的 `isTooLong` 快照，不做逐行处理。过长选区不触发自动翻译/自动高亮，手动翻译/高亮给一行中文原因，浮卡与 Inspector 显示提示且不提供复制。落实 §9「只发送用户主动选择的文本，不自动上传全文」。
+3. D3 · 搜索开销有界：结果封顶 2000（超出即 `cancelFindString`，界面显示「n / 2000+」，封顶集合内环绕）；流式匹配按「首个立即、批次翻倍且间隔 ≥120ms、结束精确刷出」节流，并用 find 代号丢弃过期通知；桥接层新增 `SearchTintPlanner` 增量着色——新结果只着色一次、⌘G 只重着色前后两个匹配、仅在结果集变化时赋值 `highlightedSelections`（实测该赋值随选区数超线性增长，旧策略模拟 2000 个匹配约 58s，新策略约 3.9s）。
 
 2026-07 体验修复与增强（Phase 6–8，已交付）：
 
@@ -904,7 +910,7 @@ SearchState
 
 2026-09 已执行：`PDFLiteTests/ReaderRegressionTests.swift` 的 12 项 XCTest 全部通过。覆盖多文件占位与去重、失败打开与取消、临时数据库降级提示、v6→v7 数据保留、同页位置返回栈、搜索起点与真实选区通知、关闭重开与适宽意图、重命名文件按内容恢复、跨页文本、引用匹配、目录坐标定位、删除标注失败时保留显示。测试目标不启动应用入口，只使用临时生成的 PDF 与独立 SQLite。
 
-2026-09-29 起测试增至 128 项 XCTest（新增：远程 URL 归一化/下载队列/下载落盘、SSE 流完成判定与错误映射、翻译服务缓存与重试、ConfigLoader、选区顺序、搜索提交语义、通知条生命周期）以及 32 项扩展 Node 测试（`node --test browser-extension/test/*.test.mjs`）。翻译相关测试全部使用 URLProtocol 桩、临时 SQLite 与临时配置文件，不触碰真实 `~/.config/pdflite` 与 Application Support。仍无测试覆盖：TextCleaner、迁移链 v1→v7 全量、ReferenceIndex/FigureJump 的真实论文启发式。
+2026-09-29 起测试增至 177 项 XCTest（新增：远程 URL 归一化/下载队列/下载落盘、SSE 流完成判定与错误映射、翻译服务缓存与重试、ConfigLoader、选区顺序、搜索提交语义与封顶/节流/增量着色、通知条生命周期、选区长度上限、带真实托管视图的阅读位置恢复与哈希取消）以及 32 项扩展 Node 测试（`node --test browser-extension/test/*.test.mjs`）。翻译相关测试全部使用 URLProtocol 桩、临时 SQLite 与临时配置文件，不触碰真实 `~/.config/pdflite` 与 Application Support。仍无测试覆盖：TextCleaner、迁移链 v1→v7 全量、ReferenceIndex/FigureJump 的真实论文启发式。
 
 运行：先 `xcodegen generate`，再 `xcodebuild -project PDFLite.xcodeproj -scheme PDFLite -configuration Debug -derivedDataPath build -destination 'platform=macOS' test`。
 
