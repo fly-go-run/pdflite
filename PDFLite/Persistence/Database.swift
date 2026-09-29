@@ -39,7 +39,9 @@ final class Database: Sendable {
         self.writer = candidate
     }
 
-    private static var migrator: DatabaseMigrator {
+    /// Internal (not private) so migration tests can build a database at any historical version
+    /// with `migrate(_:upTo:)` and then let `init(url:)` carry it the rest of the way.
+    static var migrator: DatabaseMigrator {
         var m = DatabaseMigrator()
         #if DEBUG
         m.eraseDatabaseOnSchemaChange = false
